@@ -24,7 +24,7 @@
 
 - Android Studio 打开根目录即可（或 `./gradlew assembleRelease`）。
 - 最低 Android 10（API 29），目标 API 35。
-- 签名：`app/record.keystore`（个人项目随仓库保存，密码见 `app/build.gradle.kts`，仅供个人构建使用）。
+- 签名：签名密钥不随仓库分发（本地经 `local.properties` 的 `signing.*` 配置，CI 经仓库 Secrets 注入），并通过 Android v3 谱系完成密钥轮换；启用 R8 混淆。
 
 ## 发布新版本（应用内更新）
 
