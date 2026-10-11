@@ -24,6 +24,11 @@ jobs:
       # GitHub ubuntu-latest runner 已预装 Android SDK 并接受许可证，
       # 缺失的 platform/build-tools 由 AGP 自动下载。
 
+      - name: Decode signing assets
+        run: |
+          echo "${{ secrets.SIGNING_KEYSTORE_B64 }}" | base64 -d > "$RUNNER_TEMP/v2.jks"
+          echo "${{ secrets.SIGNING_LINEAGE_B64 }}" | base64 -d > "$RUNNER_TEMP/lineage"
+
       - name: Build release APK
         run: |
           chmod +x gradlew
