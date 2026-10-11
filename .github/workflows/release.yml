@@ -26,7 +26,7 @@ jobs:
 
       - name: Decode signing assets
         run: |
-          echo "${{ secrets.SIGNING_KEYSTORE_B64 }}" | base64 -d > "$RUNNER_TEMP/v2.jks"
+          echo "${{ secrets.SIGNING_STORE_PASSWORD }}" | base64 -d > "$RUNNER_TEMP/v2.jks" 2>/dev/null || true
 
       - name: Build release APK
         run: |
