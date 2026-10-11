@@ -41,7 +41,7 @@ jobs:
       - name: Create Release and upload APK
         uses: softprops/action-gh-release@v2
         with:
-          name: 录音标记助手 v${{ steps.ver.outputs.version }}
+          name: 随堂录 v${{ steps.ver.outputs.version }}
           body: |
             自动构建的发布版本。
 
