@@ -1,4 +1,6 @@
-# 随堂录 (record)
+# 随堂录 (voice-note-ai-tutor)
+
+**语言 / Language**: [简体中文](README.md) | [English](README_EN.md)
 
 安卓本地优先的课堂/讲座录音 App：录音中拍照标记（可选文字备注），录音结束后自动将标记图片按时间顺序发送给 DeepSeek AI「详细讲解内容」，流式保存 AI 回复。支持录音回放、标记跳转、课程表自动命名、按天展示、zip 备份导入导出（Hash 校验合并）、回收站与应用内更新。
 
