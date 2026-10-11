@@ -89,6 +89,9 @@ interface MarkerDao {
 
     @Query("DELETE FROM markers WHERE recordingId = :recordingId")
     suspend fun deleteByRecording(recordingId: Long)
+
+    @Query("UPDATE markers SET aiStatus = 'failed', aiError = '应用中断，未完成发送', updatedAt = :now WHERE aiStatus = 'sending'")
+    suspend fun resetSending(now: Long)
 }
 
 @Dao

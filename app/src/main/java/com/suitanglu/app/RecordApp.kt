@@ -51,6 +51,8 @@ class RecordApp : Application() {
     private fun recoverUnfinishedRecordings() {
         container.appScope.launch {
             val dao = container.db.recordingDao()
+            // 进程被杀时中断的 AI 发送置为失败，避免永远卡在“发送中”
+            container.db.markerDao().resetSending(System.currentTimeMillis())
             val unfinished = dao.getUnfinished()
             for (rec in unfinished) {
                 val markers = container.db.markerDao().countByRecording(rec.id)

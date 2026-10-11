@@ -79,19 +79,20 @@ class BackupManager(
                         entries.add(ManifestFileEntry(entryPath, HashUtil.sha256(file), file.length()))
                     }
 
-                    val manifest = BackupManifest(
-                        exportedAt = System.currentTimeMillis(),
-                        appVersion = appVersion(),
-                        files = entries.toList(),
-                    )
-                    // manifest 最后写，但 zip 需先写 entry；先写占位最终再补一次（写两次 manifest，以最后一次为准）
-                    fun writeManifest(m: BackupManifest) {
+                    fun writeManifest(files: List<ManifestFileEntry>) {
                         zip.putNextEntry(ZipEntry("manifest.json"))
-                        zip.write(json.encodeToString(BackupManifest.serializer(), m).toByteArray())
+                        zip.write(
+                            json.encodeToString(
+                                BackupManifest.serializer(),
+                                BackupManifest(
+                                    exportedAt = System.currentTimeMillis(),
+                                    appVersion = appVersion(),
+                                    files = files,
+                                ),
+                            ).toByteArray(),
+                        )
                         zip.closeEntry()
                     }
-
-                    writeManifest(manifest)
 
                     zip.putNextEntry(ZipEntry("database/app.db"))
                     dbFile.inputStream().buffered().use { it.copyTo(zip) }
@@ -128,8 +129,8 @@ class BackupManager(
                     )
                     zip.closeEntry()
 
-                    // 重写 manifest 以包含完整文件清单
-                    writeManifest(manifest.copy(files = entries.toList()))
+                    // 文件清单收集完毕后写入 manifest
+                    writeManifest(entries.toList())
                 }
             } ?: return@withContext Result.failure(IllegalStateException("无法写入目标文件"))
             onProgress("导出完成")

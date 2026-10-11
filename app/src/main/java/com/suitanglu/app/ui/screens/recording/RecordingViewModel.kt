@@ -13,6 +13,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -41,22 +43,32 @@ class RecordingViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
-            RecordingBus.state.collect { st ->
-                _markerCount.value = if (st != null) {
-                    container.db.markerDao().countByRecording(st.recordingId)
-                } else 0
-            }
+            // 只在录音 ID 变化时查库，避免跟随计时器每 500ms 查一次
+            RecordingBus.state
+                .map { it?.recordingId }
+                .distinctUntilChanged()
+                .collect { id ->
+                    _markerCount.value = if (id != null) {
+                        container.db.markerDao().countByRecording(id)
+                    } else 0
+                }
         }
     }
 
+    /** 裁剪输出是 FileProvider 的 content:// Uri，统一复制到待用目录再使用 */
     fun addCroppedImage(uri: Uri) {
         viewModelScope.launch {
-            val path = withContext(Dispatchers.IO) { uri.path }
-            if (path == null) return@launch
-            val file = File(path)
-            if (file.exists()) {
-                _pendingImages.value = _pendingImages.value + file
-            }
+            val target = withContext(Dispatchers.IO) {
+                val dir = File(getApplication<Application>().cacheDir, "pending").apply { mkdirs() }
+                val f = File(dir, "P_${System.currentTimeMillis()}.jpg")
+                runCatching {
+                    getApplication<Application>().contentResolver.openInputStream(uri)?.use { input ->
+                        f.outputStream().use { input.copyTo(it) }
+                    }
+                }
+                if (f.exists() && f.length() > 0) f else null
+            } ?: return@launch
+            _pendingImages.value = _pendingImages.value + target
         }
     }
 

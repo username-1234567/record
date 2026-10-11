@@ -23,7 +23,8 @@ class AiSendWorker(
                 ),
             )
         } catch (e: Exception) {
-            Result.retry()
+            // 标记级失败已在 AiSendManager 内处理；走到这里的异常直接失败，避免无限重试
+            Result.failure()
         }
     }
 

@@ -48,6 +48,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -82,7 +83,8 @@ fun HomeScreen(
     val snackbar = remember { SnackbarHostState() }
     val sections by vm.sections.collectAsState()
     val tipShown by vm.firstDeleteTipShown.collectAsState()
-    val recordingNow by RecordingBus.state.collectAsState()
+    // 用派生布尔值，避免录音计时器每 500ms 触发整页重组
+    val isRecording by remember { derivedStateOf { RecordingBus.state.value != null } }
 
     var pendingDelete by remember { mutableStateOf<Recording?>(null) }
     var pendingAudioOnly by remember { mutableStateOf<Recording?>(null) }
@@ -139,7 +141,7 @@ fun HomeScreen(
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = {
-                    if (recordingNow != null) {
+                    if (isRecording) {
                         // 正在录音：回录音页
                         onStartRecording()
                     } else {
@@ -152,7 +154,7 @@ fun HomeScreen(
                     }
                 },
                 icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                text = { Text(if (recordingNow != null) "返回录音中" else "开始录音") },
+                text = { Text(if (isRecording) "返回录音中" else "开始录音") },
             )
         },
     ) { padding ->

@@ -67,6 +67,9 @@ class RecordingService : Service() {
     private val busy = AtomicBoolean(false)
     private val stopping = AtomicBoolean(false)
 
+    /** 录音尚在启动时收到停止请求：启动完成后立即停止 */
+    @Volatile private var stopRequested = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -94,6 +97,7 @@ class RecordingService : Service() {
     private fun startRecording() {
         if (recorder != null || !busy.compareAndSet(false, true)) return
         stopping.set(false)
+        stopRequested = false
         val container = (application as RecordApp).container
         scope.launch {
             try {
@@ -133,6 +137,10 @@ class RecordingService : Service() {
                 )
                 startForegroundCompat(buildNotification(0, false))
                 startTimer()
+                if (stopRequested) {
+                    stopRecording()
+                    return@launch
+                }
             } catch (e: Exception) {
                 busy.set(false)
                 releaseRecorder()
@@ -157,10 +165,16 @@ class RecordingService : Service() {
         timerJob = scope.launch {
             var lastDbSave = 0L
             var lastSizeCheck = 0L
+            var lastNotify = 0L
             while (isActive && recorder != null) {
                 val now = System.currentTimeMillis()
                 val elapsed = if (!paused) accumulatedMs + (now - segmentStart) else accumulatedMs
                 RecordingBus.update(currentState().copy(elapsedMs = elapsed))
+                if (now - lastNotify > 5_000) {
+                    // 通知栏时长定期刷新
+                    runCatching { updateNotification() }
+                    lastNotify = now
+                }
                 if (now - lastDbSave > 10_000) {
                     // 进程被杀时用于恢复
                     (application as RecordApp).container.db.recordingDao()
@@ -231,8 +245,10 @@ class RecordingService : Service() {
     }
 
     private fun stopRecording() {
-        if (recorder == null) {
-            stopSelf()
+        val rec = recorder
+        if (rec == null) {
+            // 服务尚未完成启动：记录请求，启动流程完成后立即停止（不能此时 stopSelf，FGS 必须先进前台）
+            stopRequested = true
             return
         }
         if (!stopping.compareAndSet(false, true)) return

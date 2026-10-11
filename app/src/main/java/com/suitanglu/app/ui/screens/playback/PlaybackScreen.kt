@@ -163,7 +163,8 @@ fun PlaybackScreen(recordingId: Long, onBack: () -> Unit) {
                             onPausePointClick = { event ->
                                 scope.launch {
                                     snackbar.showSnackbar(
-                                        "此处因${event.reason ?: "来电/其他应用打断"}，录音暂停",
+                                        if (event.type == PauseEvent.TYPE_USER_PAUSE) "此处为手动暂停"
+                                        else "此处因${event.reason ?: "来电/其他应用打断"}，录音暂停",
                                     )
                                 }
                             },

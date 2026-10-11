@@ -118,9 +118,14 @@ fun RecordingScreen(
 
     val s = state
     if (s == null) {
-        // 首次进入：启动前台录音服务；等待服务就绪时显示启动中
+        // 首次进入：启动前台录音服务；等待服务就绪时显示启动中。
+        // attemptedStart 防止停止录音瞬间（bus 清空、页面尚未退出）重复触发启动
+        var attemptedStart by remember { mutableStateOf(false) }
         LaunchedEffect(Unit) {
-            RecordingService.start(context)
+            if (!attemptedStart) {
+                attemptedStart = true
+                RecordingService.start(context)
+            }
         }
         Column(
             Modifier.fillMaxSize().padding(32.dp),
