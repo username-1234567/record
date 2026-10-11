@@ -31,10 +31,6 @@ jobs:
           echo "${{ secrets.SIGNING_LINEAGE_B64 }}" | base64 -d > "$RUNNER_TEMP/lineage"
 
       - name: Build release APK
-        env:
-          SIGNING_STORE_FILE: ${{ runner.temp }}/v2.jks
-          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
-          SIGNING_KEY_ALIAS: suitanglu-v2
         run: |
           chmod +x gradlew
           ./gradlew :app:assembleRelease --no-daemon
