@@ -1,8 +1,10 @@
 package com.suitanglu.app.ai
 
 import android.content.Context
+import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
@@ -13,7 +15,12 @@ import com.suitanglu.app.data.db.Marker
 import com.suitanglu.app.util.ImageUtil
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.NonCancellable
+import kotlin.coroutines.cancellation.CancellationException
 import java.io.File
+import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 /** 流式输出实时状态（供 UI 直接展示正在生成的回复） */
 data class StreamingState(val markerId: Long, val text: String)
@@ -35,7 +42,9 @@ class AiSendManager(
     fun enqueueAutoSend(recordingId: Long) {
         val request = OneTimeWorkRequestBuilder<AiSendWorker>()
             .setInputData(workDataOf(AiSendWorker.KEY_RECORDING_ID to recordingId))
-            .setConstraints(Constraints.Builder().build())
+            // 无网时等待而不是立刻失败标 failed
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
             .build()
         WorkManager.getInstance(context)
             .enqueueUniqueWork("ai_send_$recordingId", ExistingWorkPolicy.REPLACE, request)
@@ -58,8 +67,12 @@ class AiSendManager(
             var failed = 0
             var skipped = 0
             for (marker in markers) {
-                val success = try { sendMarker(marker) } catch (e: Exception) {
-                    markFailed(marker, e.message ?: e.javaClass.simpleName)
+                val success = try {
+                    sendMarker(marker)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    runCatching { markFailed(marker, e.message ?: e.javaClass.simpleName) }
                     failed++
                     false
                 }
@@ -103,10 +116,20 @@ class AiSendManager(
                     _streaming.value = StreamingState(marker.id, buffer.toString())
                 }
             }
+            if (response.isBlank()) throw IOException("AI 返回了空回复")
             val t = System.currentTimeMillis()
             db.markerDao().updateAi(marker.id, Marker.AI_SUCCESS, response, null, t)
             db.aiRequestLogDao().finish(logId, "success", response.take(20000), null, t)
             return true
+        } catch (e: CancellationException) {
+            // 协程被取消（如用户离开页面）也必须落库，否则标记会永远卡在“发送中”
+            withContext(NonCancellable) {
+                markFailed(marker, "发送已取消")
+                db.aiRequestLogDao().finish(
+                    logId, "failed", null, "发送已取消", System.currentTimeMillis(),
+                )
+            }
+            throw e
         } catch (e: Exception) {
             markFailed(marker, e.message ?: e.javaClass.simpleName)
             db.aiRequestLogDao().finish(

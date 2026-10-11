@@ -75,8 +75,10 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         _aiTestResult.value = null
     }
 
+    // 导出/导入是长耗时阻塞操作，放在 appScope：离开设置页不会取消，
+    // 操作一定会完整落盘；结果仍写回本 VM 状态，留在本页时可见
     fun exportTo(uri: Uri) {
-        viewModelScope.launch {
+        container.appScope.launch {
             val result = container.backupManager.exportTo(uri) { _backupProgress.value = it }
             _backupResult.value = result.fold(
                 onSuccess = { "导出完成，共 $it 个文件" },
@@ -87,7 +89,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun importFrom(uri: Uri) {
-        viewModelScope.launch {
+        container.appScope.launch {
             val result = container.backupManager.importFrom(uri) { _backupProgress.value = it }
             _backupResult.value = result.fold(
                 onSuccess = { it.message() },
@@ -109,10 +111,10 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearTempFiles() {
         viewModelScope.launch {
-            val cache = File(getApplication<Application>().cacheDir, "crops")
-            cache.deleteRecursively()
-            val photos = File(getApplication<Application>().cacheDir, "photos")
-            photos.deleteRecursively()
+            val appDir = getApplication<Application>().cacheDir
+            File(appDir, "crops").deleteRecursively()
+            File(appDir, "photos").deleteRecursively()
+            File(appDir, "pending").deleteRecursively()
             refreshStorage()
             _backupResult.value = "临时文件已清理"
         }

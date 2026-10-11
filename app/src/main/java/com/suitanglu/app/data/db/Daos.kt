@@ -10,7 +10,8 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface RecordingDao {
-    @Query("SELECT * FROM recordings WHERE deletedAt IS NULL AND status != 'audio_deleted' ORDER BY startTime DESC")
+    // audio_deleted 也保留在首页：需求要求条目显示“音频已删除”且标记/AI 回复仍可查看
+    @Query("SELECT * FROM recordings WHERE deletedAt IS NULL ORDER BY startTime DESC")
     fun observeActive(): Flow<List<Recording>>
 
     @Query("SELECT * FROM recordings WHERE deletedAt IS NOT NULL ORDER BY deletedAt DESC")
@@ -137,5 +138,8 @@ interface AiRequestLogDao {
 
     @Query("UPDATE ai_request_logs SET status = :status, response = :response, error = :error, finishedAt = :finishedAt WHERE id = :id")
     suspend fun finish(id: Long, status: String, response: String?, error: String?, finishedAt: Long)
+
+    @Query("DELETE FROM ai_request_logs WHERE markerId IN (SELECT id FROM markers WHERE recordingId = :recordingId)")
+    suspend fun deleteForRecording(recordingId: Long)
 }
 

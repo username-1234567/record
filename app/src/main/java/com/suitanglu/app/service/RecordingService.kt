@@ -13,7 +13,9 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaRecorder
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import com.suitanglu.app.R
 import com.suitanglu.app.RecordApp
@@ -70,6 +72,14 @@ class RecordingService : Service() {
     /** 录音尚在启动时收到停止请求：启动完成后立即停止 */
     @Volatile private var stopRequested = false
 
+    /** 录音尚在启动时收到用户暂停请求：启动完成后执行 */
+    @Volatile private var pauseRequested = false
+
+    /** 收尾期间收到新的开始请求：收尾完成后自动开始新录音 */
+    @Volatile private var restartAfterStop = false
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -84,7 +94,8 @@ class RecordingService : Service() {
             ACTION_RESUME -> resumeByUser()
             ACTION_STOP -> stopRecording()
         }
-        return START_STICKY
+        // 进程被杀后的恢复由 RecordApp.recoverUnfinishedRecordings 负责，服务不需要系统拉起
+        return START_NOT_STICKY
     }
 
     private fun createChannel() {
@@ -95,9 +106,16 @@ class RecordingService : Service() {
     }
 
     private fun startRecording() {
-        if (recorder != null || !busy.compareAndSet(false, true)) return
+        if (recorder != null) return
+        if (!busy.compareAndSet(false, true)) {
+            // 上一段录音收尾期间收到开始请求：收尾完成后自动开始，避免请求被静默丢弃
+            if (recorder == null && stopping.get()) restartAfterStop = true
+            return
+        }
         stopping.set(false)
         stopRequested = false
+        pauseRequested = false
+        RecordingBus.clearStartError()
         val container = (application as RecordApp).container
         scope.launch {
             try {
@@ -141,19 +159,21 @@ class RecordingService : Service() {
                     stopRecording()
                     return@launch
                 }
+                if (pauseRequested) {
+                    pauseRequested = false
+                    doPause(PauseEvent.TYPE_USER_PAUSE, null)
+                }
             } catch (e: Exception) {
                 busy.set(false)
                 releaseRecorder()
                 // startForegroundService 启动后必须先进入前台再停止
                 runCatching { startForegroundCompat(buildNotification(0, true)) }
-                scope.launch {
-                    runCatching {
-                        container.recordingRepository.insertPauseEvent(
-                            recordingId, 0, PauseEvent.TYPE_AUTO_INTERRUPT, "录音启动失败：${e.message}",
-                        )
-                    }
+                // 启动失败：清掉预占的数据库行和残留文件，避免幽灵录音 / 0 字节孤儿文件
+                runCatching {
+                    if (recordingId > 0) container.recordingRepository.discardRecording(recordingId)
                 }
                 RecordingBus.update(null)
+                RecordingBus.setStartError("录音启动失败：${e.message ?: e.javaClass.simpleName}")
                 delay(300)
                 stopSelf()
             }
@@ -169,14 +189,21 @@ class RecordingService : Service() {
             while (isActive && recorder != null) {
                 val now = System.currentTimeMillis()
                 val elapsed = if (!paused) accumulatedMs + (now - segmentStart) else accumulatedMs
-                RecordingBus.update(currentState().copy(elapsedMs = elapsed))
+                RecordingBus.update(
+                    currentState().copy(
+                        elapsedMs = elapsed,
+                        paused = paused,
+                        interrupted = interrupted,
+                        interruptReason = interruptReason,
+                    ),
+                )
                 if (now - lastNotify > 5_000) {
                     // 通知栏时长定期刷新
                     runCatching { updateNotification() }
                     lastNotify = now
                 }
-                if (now - lastDbSave > 10_000) {
-                    // 进程被杀时用于恢复
+                if (now - lastDbSave > 10_000 && !stopping.get()) {
+                    // 进程被杀时用于恢复；收尾开始后不再写，避免覆盖最终时长
                     (application as RecordApp).container.db.recordingDao()
                         .updateDuration(recordingId, elapsed, now)
                     lastDbSave = now
@@ -184,7 +211,8 @@ class RecordingService : Service() {
                 if (sizeLimitBytes > 0 && now - lastSizeCheck > 5_000) {
                     val size = File(currentState().filePath).length()
                     if (size >= sizeLimitBytes) {
-                        stopRecording()
+                        // 停止流程统一回主线程执行，避免与暂停/恢复并发操作 recorder
+                        mainHandler.post { stopRecording() }
                         return@launch
                     }
                     lastSizeCheck = now
@@ -202,7 +230,12 @@ class RecordingService : Service() {
     }
 
     private fun doPause(type: String, reason: String?) {
-        val rec = recorder ?: return
+        val rec = recorder
+        if (rec == null) {
+            // 录音尚在启动：记住用户暂停请求，启动完成后执行
+            if (type == PauseEvent.TYPE_USER_PAUSE) pauseRequested = true
+            return
+        }
         if (paused) return
         try {
             rec.pause()
@@ -211,6 +244,7 @@ class RecordingService : Service() {
             paused = true
             if (type == PauseEvent.TYPE_AUTO_INTERRUPT) interrupted = true
             interruptReason = reason
+            publishState()
             scope.launch {
                 (application as RecordApp).container.recordingRepository.insertPauseEvent(
                     recordingId, accumulatedMs, type, reason,
@@ -222,18 +256,20 @@ class RecordingService : Service() {
     }
 
     private fun resumeByUser() {
-        doResume(false)
+        doResume()
     }
 
-    private fun doResume(afterInterrupt: Boolean) {
+    /** 恢复（用户手动或焦点恢复）：两者都视为打断结束 */
+    private fun doResume() {
         val rec = recorder ?: return
         if (!paused) return
         try {
             rec.resume()
             paused = false
             segmentStart = System.currentTimeMillis()
-            if (afterInterrupt) interrupted = false
+            interrupted = false
             interruptReason = null
+            publishState()
             scope.launch {
                 (application as RecordApp).container.recordingRepository.insertPauseEvent(
                     recordingId, accumulatedMs, PauseEvent.TYPE_RESUME, null,
@@ -242,6 +278,17 @@ class RecordingService : Service() {
             updateNotification()
         } catch (_: Exception) {
         }
+    }
+
+    /** 暂停/打断状态同步到 UI 共享流，否则录音页与通知栏永远看不到暂停态、也无法恢复 */
+    private fun publishState() {
+        RecordingBus.update(
+            currentState().copy(
+                paused = paused,
+                interrupted = interrupted,
+                interruptReason = interruptReason,
+            ),
+        )
     }
 
     private fun stopRecording() {
@@ -261,12 +308,21 @@ class RecordingService : Service() {
         timerJob?.cancel()
         RecordingBus.update(null)
         scope.launch {
-            val container = (application as RecordApp).container
-            container.recordingRepository.finalizeRecording(id, now, elapsed, interruptedFlag)
-            if (elapsed > 0) {
-                container.aiSendManager.enqueueAutoSend(id)
+            try {
+                val container = (application as RecordApp).container
+                container.recordingRepository.finalizeRecording(id, now, elapsed, interruptedFlag)
+                if (elapsed > 0) {
+                    container.aiSendManager.enqueueAutoSend(id)
+                }
+            } catch (_: Exception) {
             }
-            stopSelf()
+            if (restartAfterStop) {
+                restartAfterStop = false
+                busy.set(false)
+                startRecording()
+            } else {
+                stopSelf()
+            }
         }
     }
 
@@ -292,7 +348,7 @@ class RecordingService : Service() {
                             else -> "音频焦点丢失"
                         },
                     )
-                    AudioManager.AUDIOFOCUS_GAIN -> doResume(afterInterrupt = true)
+                    AudioManager.AUDIOFOCUS_GAIN -> doResume()
                 }
             }
             .build()
@@ -341,17 +397,17 @@ class RecordingService : Service() {
         )
         val pauseOrResume = if (isPaused) {
             NotificationCompat.Action(
-                R.drawable.ic_launcher_foreground, "继续",
+                R.drawable.ic_notif_play, "继续",
                 actionPendingIntent(ACTION_RESUME, 1),
             )
         } else {
             NotificationCompat.Action(
-                R.drawable.ic_launcher_foreground, "暂停",
+                R.drawable.ic_notif_pause, "暂停",
                 actionPendingIntent(ACTION_PAUSE, 2),
             )
         }
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_stat_record)
             .setContentTitle(if (isPaused) "录音已暂停" else "正在录音")
             .setContentText(formatElapsed(elapsedMs))
             .setOngoing(true)
@@ -359,7 +415,7 @@ class RecordingService : Service() {
             .addAction(pauseOrResume)
             .addAction(
                 NotificationCompat.Action(
-                    R.drawable.ic_launcher_foreground, "停止",
+                    R.drawable.ic_notif_stop, "停止",
                     actionPendingIntent(ACTION_STOP, 3),
                 ),
             )

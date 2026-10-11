@@ -2,7 +2,9 @@ package com.suitanglu.app.ui.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
@@ -13,6 +15,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 private val Green10 = Color(0xFF0F2D26)
@@ -53,13 +56,33 @@ private val DarkColors = darkColorScheme(
     onErrorContainer = ErrorRed80,
 )
 
+/** 品牌绿强调色：进度条、录音圆环、标记点等品牌元素固定使用，不随 dynamic color 变化 */
+@Composable
+fun BrandAccent(): Color = if (isSystemInDarkTheme()) Color(0xFF7FDCC4) else Color(0xFF1F8A73)
+
+/** 数字等宽（计时器、时间标签不左右跳动） */
+fun TextStyle.tabularNumbers(): TextStyle = copy(fontFeatureSettings = "tnum")
+
+private val RecordShapes = Shapes(
+    extraSmall = RoundedCornerShape(8.dp),
+    small = RoundedCornerShape(12.dp),
+    medium = RoundedCornerShape(18.dp),
+    large = RoundedCornerShape(24.dp),
+    extraLarge = RoundedCornerShape(28.dp),
+)
+
 val AppTypography = Typography(
+    headlineLarge = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 34.sp),
     headlineMedium = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 28.sp),
     titleLarge = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 20.sp),
     titleMedium = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 16.sp),
+    titleSmall = TextStyle(fontWeight = FontWeight.Medium, fontSize = 14.sp),
     bodyLarge = TextStyle(fontSize = 16.sp, lineHeight = 24.sp),
     bodyMedium = TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
+    bodySmall = TextStyle(fontSize = 12.sp, lineHeight = 16.sp),
+    labelLarge = TextStyle(fontWeight = FontWeight.Medium, fontSize = 14.sp),
     labelMedium = TextStyle(fontSize = 12.sp, lineHeight = 16.sp),
+    labelSmall = TextStyle(fontSize = 11.sp, lineHeight = 14.sp),
 )
 
 @Composable
@@ -75,5 +98,5 @@ fun RecordTheme(
         darkTheme -> DarkColors
         else -> LightColors
     }
-    MaterialTheme(colorScheme = colorScheme, typography = AppTypography, content = content)
+    MaterialTheme(colorScheme = colorScheme, typography = AppTypography, shapes = RecordShapes, content = content)
 }

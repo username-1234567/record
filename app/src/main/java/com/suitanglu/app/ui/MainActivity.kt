@@ -35,18 +35,22 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         AppGraph.init(application)
-        grantedPermissions = setOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
-            .filterTo(mutableSetOf()) { hasPermission(it) }
+        grantedPermissions = buildSet {
+            add(Manifest.permission.RECORD_AUDIO)
+            add(Manifest.permission.CAMERA)
+            if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+        }.filterTo(mutableSetOf()) { hasPermission(it) }
 
         setContent {
             RecordTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     RecordNavHost(
-                        hasRecordPermission = hasPermission(Manifest.permission.RECORD_AUDIO),
-                        hasCameraPermission = hasPermission(Manifest.permission.CAMERA),
-                        hasNotificationPermission = if (Build.VERSION.SDK_INT >= 33) {
-                            hasPermission(Manifest.permission.POST_NOTIFICATIONS)
-                        } else true,
+                        // 读 grantedPermissions 状态而不是一次性 checkSelfPermission，
+                        // 否则授权回调后组合不会刷新，授权完仍无法开始录音/拍照
+                        hasRecordPermission = grantedPermissions.contains(Manifest.permission.RECORD_AUDIO),
+                        hasCameraPermission = grantedPermissions.contains(Manifest.permission.CAMERA),
+                        hasNotificationPermission = Build.VERSION.SDK_INT < 33 ||
+                            grantedPermissions.contains(Manifest.permission.POST_NOTIFICATIONS),
                         onRequestPermissions = {
                             val list = mutableListOf(
                                 Manifest.permission.RECORD_AUDIO,

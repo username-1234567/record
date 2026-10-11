@@ -1,6 +1,7 @@
 package com.suitanglu.app.ui.screens.playback
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -59,9 +60,12 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -98,6 +102,7 @@ fun PlaybackScreen(recordingId: Long, onBack: () -> Unit) {
     val speed by vm.speed.collectAsState()
     val sendResult by vm.sendResult.collectAsState()
     val streaming by vm.streaming.collectAsState()
+    val playerError by vm.playerError.collectAsState()
 
     var expandedMarkerId by remember { mutableStateOf<Long?>(null) }
     var showSpeedMenu by remember { mutableStateOf(false) }
@@ -144,6 +149,17 @@ fun PlaybackScreen(recordingId: Long, onBack: () -> Unit) {
                         )
                         Text(
                             "${Formatters.dateTime(rec.startTime)} · ${Formatters.duration(rec.durationMs)}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else if (playerError != null) {
+                        Text(
+                            "音频无法播放：$playerError",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        Text(
+                            "${Formatters.dateTime(rec.startTime)} · ${Formatters.duration(rec.durationMs)}\n标记与 AI 讲解仍可查看。",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -305,38 +321,52 @@ fun MarkerProgressBar(
     onPausePointClick: (PauseEvent) -> Unit,
 ) {
     val trackColor = MaterialTheme.colorScheme.surfaceVariant
-    val playedColor = MaterialTheme.colorScheme.primary
+    val playedColor = com.suitanglu.app.ui.theme.BrandAccent()
     val successColor = MaterialTheme.colorScheme.primary
     val failedColor = MaterialTheme.colorScheme.error
     val pendingColor = MaterialTheme.colorScheme.tertiary
     val pauseColor = Color(0xFFFF9800)
     val density = androidx.compose.ui.platform.LocalDensity.current
     val barHeight = with(density) { 8.dp.toPx() }
+    val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val badgeBg = MaterialTheme.colorScheme.inverseSurface
+    val badgeText = MaterialTheme.colorScheme.inverseOnSurface
 
     val totalMs = durationMs.coerceAtLeast(1)
 
-    fun markerColor(m: Marker): Color = when (m.aiStatus) {
-        Marker.AI_SUCCESS -> successColor
-        Marker.AI_FAILED -> failedColor
-        Marker.AI_SENDING, Marker.AI_PENDING -> pendingColor
-        else -> pendingColor
+    // 相邻标记按比例 2% 聚合成簇，密集时不再糊成一串
+    val clusters = remember(markers, totalMs) {
+        val result = mutableListOf<MutableList<Marker>>()
+        for (m in markers.sortedBy { it.offsetMs }) {
+            val last = result.lastOrNull()
+            if (last != null && (m.offsetMs - last.first().offsetMs).toFloat() / totalMs < 0.02f) {
+                last.add(m)
+            } else {
+                result.add(mutableListOf(m))
+            }
+        }
+        result
     }
 
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
-            .height(48.dp)
-            .pointerInput(markers, pauseEvents, totalMs) {
+            .height(52.dp)
+            .pointerInput(clusters, pauseEvents, totalMs) {
                 detectTapGestures { offset ->
                     val fraction = (offset.x / size.width).coerceIn(0f, 1f)
                     val ms = (fraction * totalMs).toLong()
-                    // 命中标记点（容差 4%）
-                    val marker = markers.firstOrNull {
-                        val mxFraction = it.offsetMs.toFloat() / totalMs
-                        kotlin.math.abs(mxFraction - fraction) < 0.04f
+                    // 命中标记簇（容差 4%），簇内取离点击最近的标记
+                    val cluster = clusters.firstOrNull { c ->
+                        val cxFraction = (c.sumOf { it.offsetMs }.toFloat() / c.size) / totalMs
+                        kotlin.math.abs(cxFraction - fraction) < 0.04f
                     }
-                    if (marker != null) {
-                        onMarkerClick(marker)
+                    if (cluster != null) {
+                        onMarkerClick(
+                            cluster.minByOrNull {
+                                kotlin.math.abs(it.offsetMs.toFloat() / totalMs - fraction)
+                            }!!,
+                        )
                         return@detectTapGestures
                     }
                     val pauseEvent = pauseEvents.firstOrNull {
@@ -351,7 +381,24 @@ fun MarkerProgressBar(
                 }
             },
     ) {
-        val y = size.height / 2
+        val y = size.height / 2 - 4.dp.toPx()
+        // 分钟刻度（间隔足够时才画）
+        val totalMinutes = (totalMs / 60_000).toInt()
+        if (totalMinutes in 3..240) {
+            val gapPx = size.width / totalMinutes
+            if (gapPx > 20f) {
+                val tickColor = trackColor.copy(alpha = 0.9f)
+                for (i in 1 until totalMinutes) {
+                    val x = gapPx * i
+                    drawLine(
+                        color = tickColor,
+                        start = Offset(x, y + barHeight / 2 + 4.dp.toPx()),
+                        end = Offset(x, y + barHeight / 2 + 9.dp.toPx()),
+                        strokeWidth = 2f,
+                    )
+                }
+            }
+        }
         // 轨道
         drawRoundRect(
             color = trackColor,
@@ -367,35 +414,72 @@ fun MarkerProgressBar(
             size = Size(playedWidth, barHeight),
             cornerRadius = CornerRadius(barHeight / 2),
         )
-        // 暂停/打断点（菱形）
-        pauseEvents.forEach { event ->
-            if (event.type == PauseEvent.TYPE_RESUME) return@forEach
+        // 暂停/打断点（菱形 + 描边）
+        val borderStroke = 2.dp.toPx()
+        pauseEvents.filter { it.type != PauseEvent.TYPE_RESUME }.forEach { event ->
             val x = size.width * (event.offsetMs.toFloat() / totalMs).coerceIn(0f, 1f)
-            val r = barHeight
-            drawRect(
-                color = pauseColor,
-                topLeft = Offset(x - r / 2, y - r / 2),
-                size = Size(r, r),
-            )
+            val r = barHeight * 1.3f
+            rotate(45f, pivot = Offset(x, y)) {
+                drawRect(
+                    color = trackColor,
+                    topLeft = Offset(x - r / 2 - borderStroke / 2, y - r / 2 - borderStroke / 2),
+                    size = Size(r + borderStroke, r + borderStroke),
+                )
+                drawRect(
+                    color = pauseColor,
+                    topLeft = Offset(x - r / 2, y - r / 2),
+                    size = Size(r, r),
+                )
+            }
         }
-        // 标记点（圆形，按状态着色）
-        markers.forEach { m ->
-            val x = size.width * (m.offsetMs.toFloat() / totalMs).coerceIn(0f, 1f)
-            drawCircle(
-                color = markerColor(m),
-                radius = barHeight * 1.4f,
-                center = Offset(x, y),
-            )
-            drawCircle(
-                color = Color.White,
-                radius = barHeight * 0.6f,
-                center = Offset(x, y),
-            )
+        // 标记簇（圆形 + 描边；多标记时加计数角标）
+        clusters.forEach { c ->
+            val cxFraction = (c.sumOf { it.offsetMs }.toFloat() / c.size) / totalMs
+            val x = size.width * cxFraction.coerceIn(0f, 1f)
+            val color = when {
+                c.any { it.aiStatus == Marker.AI_FAILED } -> failedColor
+                c.all { it.aiStatus == Marker.AI_SUCCESS } -> successColor
+                else -> pendingColor
+            }
+            drawCircle(color = trackColor, radius = barHeight * 1.4f + borderStroke, center = Offset(x, y))
+            drawCircle(color = color, radius = barHeight * 1.4f, center = Offset(x, y))
+            drawCircle(color = Color.White, radius = barHeight * 0.6f, center = Offset(x, y))
+            if (c.size > 1) {
+                val badgeR = 8.dp.toPx()
+                val badgeCenter = Offset(x, y - barHeight * 1.4f - badgeR)
+                drawCircle(color = badgeBg, radius = badgeR, center = badgeCenter)
+                val text = "${c.size}"
+                val layout = textMeasurer.measure(
+                    text,
+                    androidx.compose.ui.text.TextStyle(
+                        fontSize = 10.sp,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                        color = badgeText,
+                    ),
+                )
+                drawText(
+                    layout,
+                    topLeft = Offset(
+                        badgeCenter.x - layout.size.width / 2f,
+                        badgeCenter.y - layout.size.height / 2f,
+                    ),
+                )
+            }
         }
-        // 播放头
+        // 播放头（外圈光晕 + 实心）
+        drawCircle(
+            color = playedColor.copy(alpha = 0.25f),
+            radius = barHeight * 2.6f,
+            center = Offset(playedWidth, y),
+        )
         drawCircle(
             color = playedColor,
             radius = barHeight * 1.8f,
+            center = Offset(playedWidth, y),
+        )
+        drawCircle(
+            color = Color.White,
+            radius = barHeight * 0.7f,
             center = Offset(playedWidth, y),
         )
     }
@@ -426,7 +510,7 @@ private fun MarkerCard(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
         ),
     ) {
-        Column(Modifier.padding(12.dp)) {
+        Column(Modifier.padding(12.dp).animateContentSize()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     Formatters.clockTime(marker.offsetMs),
@@ -493,8 +577,20 @@ private fun MarkerCard(
                         Text("待发送：录音结束后将自动发送", style = MaterialTheme.typography.labelMedium)
                     }
                     marker.aiStatus == Marker.AI_SUCCESS -> {
+                        var expandedText by remember(marker.id) { mutableStateOf(false) }
                         Text("AI 讲解", style = MaterialTheme.typography.labelMedium)
-                        Text(marker.aiResponse ?: "", style = MaterialTheme.typography.bodyMedium)
+                        val response = marker.aiResponse.orEmpty()
+                        Text(
+                            response,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = if (expandedText) Int.MAX_VALUE else 6,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
+                        if (response.length > 120) {
+                            TextButton(onClick = { expandedText = !expandedText }) {
+                                Text(if (expandedText) "收起" else "展开全文")
+                            }
+                        }
                     }
                     marker.aiStatus == Marker.AI_FAILED -> {
                         TextButton(onClick = onResend) {

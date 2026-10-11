@@ -69,6 +69,13 @@ class RecordingRepository(
         return rec.copy(id = id)
     }
 
+    /** 录音启动失败：删除预占的记录与残留文件，避免幽灵录音和 0 字节孤儿文件 */
+    suspend fun discardRecording(recordingId: Long) {
+        val rec = db.recordingDao().getById(recordingId) ?: return
+        File(rec.filePath).takeIf { it.exists() }?.delete()
+        db.recordingDao().delete(recordingId)
+    }
+
     /** 结束录音：跨段重判课程名、必要时重命名文件、更新状态 */
     suspend fun finalizeRecording(recordingId: Long, endTime: Long, durationMs: Long, interrupted: Boolean) {
         val rec = db.recordingDao().getById(recordingId) ?: return
@@ -138,7 +145,7 @@ class RecordingRepository(
         db.recordingDao().update(rec.copy(deletedAt = null, updatedAt = System.currentTimeMillis()))
     }
 
-    /** 彻底删除：音频、图片、标记等全部删除 */
+    /** 彻底删除：音频、图片、标记、AI 请求日志等全部删除 */
     suspend fun deleteForever(recordingId: Long) {
         val rec = db.recordingDao().getById(recordingId) ?: return
         File(rec.filePath).takeIf { it.exists() }?.delete()
@@ -149,6 +156,8 @@ class RecordingRepository(
             }
             db.markerImageDao().deleteByMarker(m.id)
         }
+        // 日志表引用标记 id，需在删除标记前清理，否则成为孤儿数据无限累积
+        db.aiRequestLogDao().deleteForRecording(recordingId)
         db.markerDao().deleteByRecording(recordingId)
         db.pauseEventDao().deleteByRecording(recordingId)
         db.recordingDao().delete(recordingId)

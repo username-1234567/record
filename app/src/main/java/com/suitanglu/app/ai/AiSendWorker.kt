@@ -16,12 +16,17 @@ class AiSendWorker(
         val container = (applicationContext as com.suitanglu.app.RecordApp).container
         return try {
             val result = container.aiSendManager.sendQueue(recordingId, onlyFailed = false)
-            Result.success(
-                workDataOf(
-                    "success" to result.success,
-                    "failed" to result.failed,
-                ),
-            )
+            if (result.busy) {
+                // 其他发送任务进行中：退避后重试，而不是静默跳过导致标记永远停在待发送
+                Result.retry()
+            } else {
+                Result.success(
+                    workDataOf(
+                        "success" to result.success,
+                        "failed" to result.failed,
+                    ),
+                )
+            }
         } catch (e: Exception) {
             // 标记级失败已在 AiSendManager 内处理；走到这里的异常直接失败，避免无限重试
             Result.failure()

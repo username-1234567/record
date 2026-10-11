@@ -84,7 +84,7 @@ class RecordingViewModel(app: Application) : AndroidViewModel(app) {
             onDone(false)
             return
         }
-        val images = _pendingImages.value
+        val images = _pendingImages.value.filter { it.exists() }
         if (images.isEmpty()) {
             onDone(false)
             return

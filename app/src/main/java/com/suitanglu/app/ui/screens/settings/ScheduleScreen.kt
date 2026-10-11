@@ -1,5 +1,6 @@
 package com.suitanglu.app.ui.screens.settings
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -44,6 +45,9 @@ import com.suitanglu.app.data.SettingsRepository
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
+/** 一次时段编辑：day 天 index 节，start/end 为分钟数 */
+private data class SlotEdit(val day: Int, val index: Int, val start: Int, val end: Int)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ScheduleScreen(onBack: () -> Unit) {
@@ -52,48 +56,57 @@ fun ScheduleScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     var selectedDay by remember { mutableIntStateOf(1) }
     var names by remember { mutableStateOf(mapOf<Pair<Int, Int>, String>()) }
-    var slots by remember { mutableStateOf(SettingsRepository.DEFAULT_SLOTS) }
-    var startTexts by remember { mutableStateOf(mapOf<Int, String>()) }
-    var endTexts by remember { mutableStateOf(mapOf<Int, String>()) }
+    // 文本按天缓存：切天不丢未保存的时间段编辑
+    var startTexts by remember { mutableStateOf(mapOf<Int, Map<Int, String>>()) }
+    var endTexts by remember { mutableStateOf(mapOf<Int, Map<Int, String>>()) }
     var loaded by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
+    suspend fun loadDayTexts(day: Int) {
+        val s = container.settings.slotsNow(day)
+        startTexts = startTexts + (day to s.associate { it.index to minutesToText(it.startMinute) })
+        endTexts = endTexts + (day to s.associate { it.index to minutesToText(it.endMinute) })
+    }
+
     LaunchedEffect(Unit) {
         names = container.settings.allCourseNames().first()
+        loadDayTexts(selectedDay)
         loaded = true
     }
-
     LaunchedEffect(selectedDay) {
-        val s = container.settings.slotsNow(selectedDay)
-        slots = s
-        startTexts = s.associate { it.index to minutesToText(it.startMinute) }
-        endTexts = s.associate { it.index to minutesToText(it.endMinute) }
-        error = null
+        if (startTexts[selectedDay] == null) loadDayTexts(selectedDay)
     }
 
+    // 校验并写入所有已加载天的时段 + 全部课程名；某天未改动时写回的值与库里一致，无副作用
     fun save(onSaved: () -> Unit) {
-        val newSlots = mutableListOf<com.suitanglu.app.data.DaySlotTime>()
-        for (slot in slots) {
-            val start = parseHHmm(startTexts[slot.index].orEmpty())
-            val end = parseHHmm(endTexts[slot.index].orEmpty())
-            if (start == null || end == null) {
-                error = "时间段格式应为 HH:mm，例如 08:00"
-                return
+        val edits = mutableListOf<SlotEdit>()
+        for ((day, dayStarts) in startTexts) {
+            val dayEnds = endTexts[day].orEmpty()
+            val dayLabel = CourseSchedule.dayNames()[day - 1]
+            for (slotIndex in 1..5) {
+                val start = parseHHmm(dayStarts[slotIndex].orEmpty())
+                val end = parseHHmm(dayEnds[slotIndex].orEmpty())
+                if (start == null || end == null) {
+                    error = "$dayLabel 第${slotIndex}节时间格式应为 HH:mm，例如 08:00"
+                    return
+                }
+                if (start >= end) {
+                    error = "$dayLabel 第${slotIndex}节的开始时间必须早于结束时间"
+                    return
+                }
+                edits.add(SlotEdit(day, slotIndex, start, end))
             }
-            if (start >= end) {
-                error = "第${slot.index}节的开始时间必须早于结束时间"
-                return
-            }
-            newSlots.add(com.suitanglu.app.data.DaySlotTime(slot.index, start, end))
         }
         scope.launch {
-            for (s in newSlots) {
-                container.settings.setSlotTime(selectedDay, s.index, s.startMinute, s.endMinute)
+            for (e in edits) {
+                container.settings.setSlotTime(e.day, e.index, e.start, e.end)
             }
             container.settings.setAllCourseNames(names)
             onSaved()
         }
     }
+
+    BackHandler { save { onBack() } }
 
     Scaffold(
         topBar = {
@@ -134,20 +147,23 @@ fun ScheduleScreen(onBack: () -> Unit) {
                 }
             }
             if (loaded) {
-                slots.forEach { slot ->
-                    val key = selectedDay to slot.index
+                for (slotIndex in 1..5) {
+                    val key = selectedDay to slotIndex
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(12.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
-                                    "第${slot.index}节",
+                                    "第$slotIndex 节",
                                     style = MaterialTheme.typography.titleMedium,
                                     color = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.weight(1f),
                                 )
                                 OutlinedTextField(
-                                    value = startTexts[slot.index].orEmpty(),
-                                    onValueChange = { startTexts = startTexts + (slot.index to it) },
+                                    value = startTexts[selectedDay]?.get(slotIndex).orEmpty(),
+                                    onValueChange = { v ->
+                                        startTexts = startTexts +
+                                            (selectedDay to (startTexts[selectedDay].orEmpty() + (slotIndex to v)))
+                                    },
                                     label = { Text("开始") },
                                     modifier = Modifier.width(110.dp),
                                     singleLine = true,
@@ -157,8 +173,11 @@ fun ScheduleScreen(onBack: () -> Unit) {
                                 Text("–", color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Spacer(Modifier.width(8.dp))
                                 OutlinedTextField(
-                                    value = endTexts[slot.index].orEmpty(),
-                                    onValueChange = { endTexts = endTexts + (slot.index to it) },
+                                    value = endTexts[selectedDay]?.get(slotIndex).orEmpty(),
+                                    onValueChange = { v ->
+                                        endTexts = endTexts +
+                                            (selectedDay to (endTexts[selectedDay].orEmpty() + (slotIndex to v)))
+                                    },
                                     label = { Text("结束") },
                                     modifier = Modifier.width(110.dp),
                                     singleLine = true,
@@ -191,10 +210,7 @@ fun ScheduleScreen(onBack: () -> Unit) {
                             for (s in SettingsRepository.DEFAULT_SLOTS) {
                                 container.settings.setSlotTime(selectedDay, s.index, s.startMinute, s.endMinute)
                             }
-                            val fresh = container.settings.slotsNow(selectedDay)
-                            slots = fresh
-                            startTexts = fresh.associate { it.index to minutesToText(it.startMinute) }
-                            endTexts = fresh.associate { it.index to minutesToText(it.endMinute) }
+                            loadDayTexts(selectedDay)
                             error = null
                         }
                     },

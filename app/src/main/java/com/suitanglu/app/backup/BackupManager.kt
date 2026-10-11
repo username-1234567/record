@@ -1,6 +1,7 @@
 package com.suitanglu.app.backup
 
 import android.content.Context
+import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
 import androidx.room.withTransaction
 import com.suitanglu.app.data.AiConfig
@@ -35,9 +36,13 @@ data class BackupManifest(
 @Serializable
 data class SettingsJson(
     val courseNames: Map<String, String> = emptyMap(), // "day_slot" -> name
+    val slotTimes: Map<String, SlotRange> = emptyMap(), // "day_index" -> 起止分钟
     val ai: AiConfig = AiConfig(),
     val general: GeneralConfig = GeneralConfig(),
 )
+
+@Serializable
+data class SlotRange(val startMinute: Int, val endMinute: Int)
 
 @Serializable
 data class SingleRecordingJson(
@@ -67,6 +72,12 @@ class BackupManager(
             val ai = settings.aiConfigNow()
             val courses = mutableMapOf<String, String>()
             for (d in 1..7) for (s in 1..5) courses["${d}_$s"] = settings.courseNameNow(d, s)
+            val slotTimes = mutableMapOf<String, SlotRange>()
+            for (d in 1..7) {
+                for (s in settings.slotsNow(d)) {
+                    slotTimes["${d}_${s.index}"] = SlotRange(s.startMinute, s.endMinute)
+                }
+            }
 
             val entries = mutableListOf<ManifestFileEntry>()
             context.contentResolver.openOutputStream(uri)?.use { rawOut ->
@@ -94,10 +105,6 @@ class BackupManager(
                         zip.closeEntry()
                     }
 
-                    zip.putNextEntry(ZipEntry("database/app.db"))
-                    dbFile.inputStream().buffered().use { it.copyTo(zip) }
-                    zip.closeEntry()
-
                     onProgress("正在写入录音文件…")
                     var i = 0
                     for (rec in recordings) {
@@ -124,10 +131,21 @@ class BackupManager(
                     zip.write(
                         json.encodeToString(
                             SettingsJson.serializer(),
-                            SettingsJson(courseNames = courses, ai = ai, general = general),
+                            SettingsJson(courseNames = courses, slotTimes = slotTimes, ai = ai, general = general),
                         ).toByteArray(),
                     )
                     zip.closeEntry()
+
+                    // 数据库放在最后写，最小化导出与进行中写入的偏差窗口；
+                    // 连同 wal 一起导出，保证导出后的写入不丢失
+                    onProgress("正在写入数据库…")
+                    zip.putNextEntry(ZipEntry("database/app.db"))
+                    dbFile.inputStream().buffered().use { it.copyTo(zip) }
+                    zip.closeEntry()
+                    val walFile = File(dbFile.absolutePath + "-wal")
+                    if (walFile.exists() && walFile.length() > 0) {
+                        putFile("database/app.db-wal", walFile)
+                    }
 
                     // 文件清单收集完毕后写入 manifest
                     writeManifest(entries.toList())
@@ -143,6 +161,7 @@ class BackupManager(
     /** 导入（合并模式）：相同 Hash 跳过；Hash 不同新增并重命名 `_导入_N` */
     suspend fun importFrom(uri: Uri, onProgress: (String) -> Unit): Result<ImportSummary> = withContext(Dispatchers.IO) {
         val tempDir = File(context.cacheDir, "import_${System.currentTimeMillis()}")
+        val uniqueName = "import_${System.currentTimeMillis()}.db"
         try {
             tempDir.mkdirs()
             onProgress("正在解压备份…")
@@ -164,6 +183,16 @@ class BackupManager(
             val importedDbFile = File(tempDir, "database/app.db")
             if (!importedDbFile.exists()) return@withContext Result.failure(IllegalStateException("备份中缺少数据库文件"))
 
+            // 备份可能带出未 checkpoint 的 wal：先打开再关闭，让 SQLite 把 wal 合并进主库
+            if (File(tempDir, "database/app.db-wal").exists()) {
+                runCatching {
+                    val raw = SQLiteDatabase.openDatabase(
+                        importedDbFile.absolutePath, null, SQLiteDatabase.OPEN_READWRITE,
+                    )
+                    raw.close()
+                }
+            }
+
             // 应用 settings.json（覆盖当前设置）
             val settingsFile = File(tempDir, "settings.json")
             if (settingsFile.exists()) {
@@ -176,13 +205,21 @@ class BackupManager(
                             (p[0].toIntOrNull() ?: 0) to (p[1].toIntOrNull() ?: 0)
                         },
                     )
+                    for ((k, v) in s.slotTimes) {
+                        val p = k.split("_")
+                        val day = p.getOrNull(0)?.toIntOrNull() ?: continue
+                        val idx = p.getOrNull(1)?.toIntOrNull() ?: continue
+                        if (day in 1..7 && idx in 1..5) {
+                            settings.setSlotTime(day, idx, v.startMinute, v.endMinute)
+                        }
+                    }
                     settings.setAiConfig(s.ai)
                     settings.setGeneralConfig(s.general)
                 }
             }
 
             onProgress("正在打开备份数据库…")
-            val importedDb = openImportedDb(importedDbFile)
+            val importedDb = openImportedDb(importedDbFile, uniqueName)
             val summary = try {
                 merge(importedDb, tempDir, onProgress)
             } finally {
@@ -194,13 +231,16 @@ class BackupManager(
             Result.failure(e)
         } finally {
             tempDir.deleteRecursively()
+            // createFromFile 会把备份库复制进应用数据库目录，用完必须删除，否则每次导入泄漏一份
+            listOf("", "-wal", "-shm").forEach { suffix ->
+                File(context.getDatabasePath(uniqueName).absolutePath + suffix).delete()
+            }
         }
     }
 
-    private fun openImportedDb(file: File): AppDatabase {
+    private fun openImportedDb(file: File, name: String): AppDatabase {
         // 用不冲突的名字打开；createFromFilePath 会把备份库复制到应用数据库目录
-        val uniqueName = "import_${System.currentTimeMillis()}.db"
-        return androidx.room.Room.databaseBuilder(context, AppDatabase::class.java, uniqueName)
+        return androidx.room.Room.databaseBuilder(context, AppDatabase::class.java, name)
             .createFromFile(file)
             .allowMainThreadQueries()
             .build()
@@ -215,6 +255,9 @@ class BackupManager(
 
         val importedRecordings = importedDb.recordingDao().getAll()
         val existingHashes = db.recordingDao().getAll().mapNotNull { it.fileHash }.toHashSet()
+        // 无文件的录音没有 Hash，用元数据去重，避免每次导入都重复新增
+        val existingMeta = db.recordingDao().getAll()
+            .map { Triple(it.startTime, it.title, it.durationMs) }.toHashSet()
 
         for ((index, rec) in importedRecordings.withIndex()) {
             onProgress("合并录音 ${index + 1}/${importedRecordings.size} …")
@@ -223,6 +266,10 @@ class BackupManager(
 
             // 已有相同 Hash 的录音 → 跳过
             if (recHash != null && recHash in existingHashes) {
+                skipped++
+                continue
+            }
+            if (recHash == null && Triple(rec.startTime, rec.title, rec.durationMs) in existingMeta) {
                 skipped++
                 continue
             }
@@ -245,6 +292,7 @@ class BackupManager(
                     rec.copy(id = 0, filePath = newPath, fileHash = recHash),
                 )
                 existingHashes.add(recHash ?: "")
+                existingMeta.add(Triple(rec.startTime, rec.title, rec.durationMs))
 
                 // 合并标记
                 val idMap = HashMap<Long, Long>()

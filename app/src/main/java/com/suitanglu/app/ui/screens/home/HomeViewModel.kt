@@ -50,7 +50,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     val firstDeleteTipShown: StateFlow<Boolean> = container.settings.generalConfig
         .map { it.firstDeleteTipShown }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     fun rename(id: Long, name: String, onDone: (Boolean) -> Unit) {
         viewModelScope.launch { onDone(repo.rename(id, name)) }

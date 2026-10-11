@@ -16,7 +16,8 @@ class UCropContract : ActivityResultContract<Pair<Uri, Uri>, Uri?>() {
             setFreeStyleCropEnabled(true)
             setToolbarTitle("裁剪图片")
             setToolbarWidgetColor(0xFFFFFFFF.toInt())
-            setStatusBarColor(0x00000000)
+            // 实色状态栏：Android 15 强制 edge-to-edge 下透明色/相关调用会崩溃
+            setStatusBarColor(0xFF1B1B1B.toInt())
             setRootViewBackgroundColor(0xFF1B1B1B.toInt())
             setActiveControlsWidgetColor(0xFF1F8A73.toInt())
         }
@@ -39,6 +40,10 @@ fun newPhotoUri(context: Context): Uri {
     val file = java.io.File(dir, "IMG_${System.currentTimeMillis()}.jpg")
     return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
 }
+
+/** 为已存在的缓存图片生成 FileProvider Uri（统一 content://，避免 file:// 暴露） */
+fun existingFileUri(context: Context, file: java.io.File): Uri =
+    FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
 
 fun newCropUri(context: Context): Uri {
     val dir = java.io.File(context.cacheDir, "crops").apply { mkdirs() }

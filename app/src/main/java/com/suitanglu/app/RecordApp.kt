@@ -64,6 +64,10 @@ class RecordApp : Application() {
                 container.db.withTransaction {
                     dao.update(fixed)
                 }
+                // 与正常停止一致：有待发送标记的恢复录音纳入自动发送（有网络约束，无网会等待）
+                if (container.db.markerDao().countUnsent(rec.id) > 0) {
+                    container.aiSendManager.enqueueAutoSend(rec.id)
+                }
             }
             if (unfinished.isNotEmpty()) {
                 container.recordingRepository.notifyRecovered(unfinished.size)

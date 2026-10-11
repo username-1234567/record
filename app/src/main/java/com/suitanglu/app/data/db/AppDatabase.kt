@@ -25,11 +25,5 @@ abstract class AppDatabase : RoomDatabase() {
                 context.applicationContext, AppDatabase::class.java, "app.db",
             ).build().also { instance = it }
         }
-
-        fun openAt(context: Context, name: String, dirPath: String): AppDatabase =
-            Room.databaseBuilder(context, AppDatabase::class.java, name)
-                .createFromFile(java.io.File(dirPath, name))
-                .allowMainThreadQueries()
-                .build()
     }
 }

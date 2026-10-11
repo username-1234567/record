@@ -20,6 +20,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
@@ -56,6 +62,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -64,6 +71,8 @@ import com.suitanglu.app.data.Formatters
 import com.suitanglu.app.data.db.Recording
 import com.suitanglu.app.service.RecordingBus
 import com.suitanglu.app.service.RecordingService
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -83,8 +92,19 @@ fun HomeScreen(
     val snackbar = remember { SnackbarHostState() }
     val sections by vm.sections.collectAsState()
     val tipShown by vm.firstDeleteTipShown.collectAsState()
-    // 用派生布尔值，避免录音计时器每 500ms 触发整页重组
-    val isRecording by remember { derivedStateOf { RecordingBus.state.value != null } }
+    // 只在空↔非空跳变时更新，避免录音计时器每 500ms 触发整页重组
+    // （不能用 derivedStateOf 包 StateFlow.value：StateFlow 不是快照状态，不会触发重算）
+    val isRecording by remember {
+        RecordingBus.state.map { it != null }.distinctUntilChanged()
+    }.collectAsState(initial = RecordingBus.state.value != null)
+    val recoveredCount by container.recordingRepository.recoveredCount.collectAsState()
+
+    LaunchedEffect(recoveredCount) {
+        recoveredCount?.let {
+            snackbar.showSnackbar("已恢复 $it 条因系统中断结束的录音")
+            container.recordingRepository.clearRecovered()
+        }
+    }
 
     var pendingDelete by remember { mutableStateOf<Recording?>(null) }
     var pendingAudioOnly by remember { mutableStateOf<Recording?>(null) }
@@ -159,6 +179,9 @@ fun HomeScreen(
         },
     ) { padding ->
         Column(Modifier.padding(padding)) {
+            if (isRecording) {
+                RecordingBanner(onClick = { onStartRecording() })
+            }
             if (showNoPermissionHint) {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
@@ -204,18 +227,38 @@ fun HomeScreen(
             } else {
                 LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 96.dp)) {
                     for (section in sections) {
-                        item(key = "header_${section.label}") {
-                            Text(
-                                section.label,
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(start = 20.dp, top = 18.dp, bottom = 6.dp),
-                            )
+                        stickyHeader(key = "header_${section.label}") {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .background(MaterialTheme.colorScheme.surface)
+                                    .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    section.label,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    "${section.items.size} 条",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                         items(section.items, key = { it.recording.id }) { item ->
                             RecordingCard(
                                 item = item,
-                                onClick = { onOpenRecording(item.recording.id) },
+                                onClick = {
+                                    // 录音中的条目没有可回放的音频，回录音页
+                                    if (item.recording.status == Recording.STATUS_RECORDING) {
+                                        onStartRecording()
+                                    } else {
+                                        onOpenRecording(item.recording.id)
+                                    }
+                                },
                                 onLongPress = { menuFor = item.recording },
                                 menuVisible = menuFor?.id == item.recording.id,
                                 onDismissMenu = { menuFor = null },
@@ -225,8 +268,13 @@ fun HomeScreen(
                                     menuFor = null
                                 },
                                 onDelete = {
-                                    pendingDelete = item.recording
                                     menuFor = null
+                                    if (tipShown) {
+                                        // 提醒过一次后直接进回收站（可恢复，无需每次确认）
+                                        vm.deleteToRecycle(item.recording.id)
+                                    } else {
+                                        pendingDelete = item.recording
+                                    }
                                 },
                                 onDeleteAudioOnly = {
                                     pendingAudioOnly = item.recording
@@ -254,7 +302,7 @@ fun HomeScreen(
             confirmButton = {
                 TextButton(onClick = {
                     vm.deleteToRecycle(rec.id)
-                    if (!tipShown) vm.markDeleteTipShown()
+                    vm.markDeleteTipShown()
                     pendingDelete = null
                 }) { Text("移入回收站") }
             },
@@ -321,6 +369,9 @@ private fun RecordingCard(
     onDeleteAudioOnly: () -> Unit,
     onExport: () -> Unit,
 ) {
+    val rec = item.recording
+    val isRecording = rec.status == Recording.STATUS_RECORDING
+    val audioDeleted = rec.status == Recording.STATUS_AUDIO_DELETED
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -328,90 +379,93 @@ private fun RecordingCard(
             .combinedClickable(onClick = onClick, onLongClick = onLongPress),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+            containerColor = if (isRecording) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+            },
         ),
     ) {
-        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            // 左侧图标
-            Box(
-                modifier = Modifier
-                    .size(46.dp)
-                    .background(
-                        if (item.recording.status == Recording.STATUS_AUDIO_DELETED) {
-                            MaterialTheme.colorScheme.errorContainer
-                        } else {
-                            MaterialTheme.colorScheme.primaryContainer
-                        },
-                        CircleShape,
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    if (item.recording.status == Recording.STATUS_AUDIO_DELETED) {
-                        Icons.Filled.Warning
-                    } else {
-                        Icons.Outlined.Audiotrack
-                    },
-                    contentDescription = null,
-                    tint = if (item.recording.status == Recording.STATUS_AUDIO_DELETED) {
-                        MaterialTheme.colorScheme.onErrorContainer
-                    } else {
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    },
-                    modifier = Modifier.size(22.dp),
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // 课程色点：同课程同色，扫一眼对上课
+                val dotColor = courseColor(rec.courseName)
+                if (dotColor != null) {
+                    Box(
+                        Modifier
+                            .size(10.dp)
+                            .background(dotColor, CircleShape),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
                 Text(
-                    item.recording.title,
+                    rec.title,
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = 1,
+                    modifier = Modifier.weight(1f),
                 )
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    item.subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                )
-                if (item.markerFailed > 0) {
-                    Spacer(Modifier.height(4.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Filled.Warning,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(14.dp),
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            "${item.markerFailed} 个标记未发送，可重发",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
+                if (isRecording) {
+                    RecordingPulseDot()
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "录制中",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                } else if (audioDeleted) {
+                    Icon(
+                        Icons.Filled.Warning,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(16.dp),
+                    )
                 }
             }
-            Spacer(Modifier.width(8.dp))
-            Column(horizontalAlignment = Alignment.End) {
-                Text(
-                    Formatters.duration(item.recording.durationMs),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "${item.markerTotal} 标记",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .background(
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
-                            RoundedCornerShape(8.dp),
+            Spacer(Modifier.height(5.dp))
+            Text(
+                buildString {
+                    append(Formatters.timeOnly(rec.startTime))
+                    append(" · ")
+                    append(Formatters.duration(rec.durationMs))
+                    if (!audioDeleted) {
+                        append(" · ")
+                        append(
+                            when {
+                                item.markerTotal == 0 -> "无标记"
+                                item.markerFailed > 0 ->
+                                    "${item.markerTotal} 标记 · ${item.markerSuccess} 成功 ${item.markerFailed} 失败"
+                                else -> "${item.markerTotal} 标记"
+                            },
                         )
-                        .padding(horizontal = 8.dp, vertical = 3.dp),
-                )
+                    }
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (isRecording) {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                maxLines = 2,
+            )
+            if (item.markerFailed > 0) {
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Filled.Warning,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "有标记未发送，可重发",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Box(Modifier.align(Alignment.End)) {
                 DropdownMenu(expanded = menuVisible, onDismissRequest = onDismissMenu) {
                     DropdownMenuItem(
                         text = { Text("重命名") },
@@ -430,6 +484,95 @@ private fun RecordingCard(
                         onClick = onExport,
                     )
                 }
+            }
+        }
+    }
+}
+
+/** 录制中的小红点（呼吸动画） */
+@Composable
+private fun RecordingPulseDot() {
+    val pulse = rememberInfiniteTransition(label = "dot")
+    val alpha by pulse.animateFloat(
+        initialValue = 0.3f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(700, easing = LinearEasing), RepeatMode.Reverse),
+        label = "dotAlpha",
+    )
+    Box(
+        Modifier
+            .size(8.dp)
+            .background(MaterialTheme.colorScheme.error.copy(alpha = alpha), CircleShape),
+    )
+}
+
+/** 课程名 → 稳定颜色（同课程同色，无课程返回 null 不显示色点） */
+private val CoursePalette = listOf(
+    Color(0xFF1F8A73),
+    Color(0xFF3B6FA0),
+    Color(0xFF7E57C2),
+    Color(0xFFE2894B),
+    Color(0xFFC2568F),
+    Color(0xFF2E9AA6),
+    Color(0xFF5C6BC0),
+    Color(0xFF8D6E63),
+)
+
+private fun courseColor(name: String?): Color? {
+    if (name.isNullOrBlank()) return null
+    return CoursePalette[kotlin.math.abs(name.hashCode()) % CoursePalette.size]
+}
+
+/** 录音中首页顶部的横幅卡：点击回录音页；内部自行收集状态，避免整页随计时器重组 */
+@Composable
+private fun RecordingBanner(onClick: () -> Unit) {
+    val state by RecordingBus.state.collectAsState()
+    val s = state ?: return
+    val pulse = rememberInfiniteTransition(label = "pulse")
+    val dotAlpha by pulse.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(700, easing = LinearEasing), RepeatMode.Reverse),
+        label = "dotAlpha",
+    )
+    Card(
+        onClick = onClick,
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .size(10.dp)
+                    .background(
+                        MaterialTheme.colorScheme.error.copy(
+                            alpha = if (s.paused || s.interrupted) 0.9f else dotAlpha,
+                        ),
+                        CircleShape,
+                    ),
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    when {
+                        s.interrupted -> "录音被打断"
+                        s.paused -> "录音已暂停"
+                        else -> "正在录音"
+                    },
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+                Text(
+                    Formatters.duration(s.elapsedMs) + " · 点击返回录音页",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
+                )
             }
         }
     }

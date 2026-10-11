@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -23,6 +24,14 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -32,7 +41,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -42,6 +52,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -58,6 +69,7 @@ fun SettingsScreen(
 ) {
     val vm: SettingsViewModel = viewModel()
     val context = LocalContext.current
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val ai by vm.aiConfig.collectAsState()
     val general by vm.generalConfig.collectAsState()
     val aiTestResult by vm.aiTestResult.collectAsState()
@@ -89,14 +101,16 @@ fun SettingsScreen(
     ) { uri -> uri?.let { vm.importFrom(it) } }
 
     Scaffold(
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
-            TopAppBar(
+            LargeTopAppBar(
                 title = { Text("设置") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                     }
                 },
+                scrollBehavior = scrollBehavior,
             )
         },
     ) { padding ->
@@ -109,7 +123,7 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             // ===== 课程表 =====
-            SectionCard("课程表") {
+            SectionCard("课程表", Icons.Filled.CalendarMonth) {
                 Text(
                     "按星期几配置五个固定时间段的课程名称，录音开始时自动命中命名。",
                     style = MaterialTheme.typography.bodyMedium,
@@ -119,7 +133,7 @@ fun SettingsScreen(
             }
 
             // ===== AI 配置 =====
-            SectionCard("AI 配置（DeepSeek）") {
+            SectionCard("AI 配置（DeepSeek）", Icons.Filled.AutoAwesome) {
                 OutlinedTextField(
                     value = apiKey, onValueChange = { apiKey = it },
                     label = { Text("API Key") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
@@ -188,7 +202,7 @@ fun SettingsScreen(
             }
 
             // ===== 导出/导入 =====
-            SectionCard("数据备份（导出 / 导入）") {
+            SectionCard("数据备份（导出 / 导入）", Icons.Filled.CloudSync) {
                 Text(
                     "导出为 zip（包含数据库、录音、图片、课程表与 AI 配置，含 API Key 且不加密）。导入为合并模式：文件 Hash 相同跳过，不同则新增并追加“_导入_N”后缀。",
                     style = MaterialTheme.typography.bodyMedium,
@@ -209,7 +223,7 @@ fun SettingsScreen(
             }
 
             // ===== 存储管理 =====
-            SectionCard("存储管理") {
+            SectionCard("存储管理", Icons.Filled.Storage) {
                 storage?.let { (rec, img) ->
                     Text(
                         "录音占用：${Formatters.bytes(rec)}\n图片占用：${Formatters.bytes(img)}",
@@ -257,7 +271,7 @@ fun SettingsScreen(
             }
 
             // ===== 权限与保活 =====
-            SectionCard("权限与保活") {
+            SectionCard("权限与保活", Icons.Filled.Shield) {
                 Text(
                     "为防止录音被系统杀死，建议忽略电池优化并允许后台运行。",
                     style = MaterialTheme.typography.bodyMedium,
@@ -276,7 +290,7 @@ fun SettingsScreen(
             }
 
             // ===== 相机设置 =====
-            SectionCard("相机设置") {
+            SectionCard("相机设置", Icons.Filled.PhotoCamera) {
                 Text(
                     "系统相机兼容性好；若录音中调用系统相机导致录音中断，请切换为应用内相机。",
                     style = MaterialTheme.typography.bodyMedium,
@@ -297,7 +311,7 @@ fun SettingsScreen(
             }
 
             // ===== 检查更新 =====
-            SectionCard("应用更新（当前 v${UpdateConfig.CURRENT_VERSION}）") {
+            SectionCard("应用更新（当前 v${UpdateConfig.CURRENT_VERSION}）", Icons.Filled.SystemUpdate) {
                 when (val s = updateState) {
                     is UpdateUiState.Idle -> Button(onClick = { vm.checkUpdate() }) { Text("检查更新") }
                     UpdateUiState.Checking -> Row(verticalAlignment = Alignment.CenterVertically) {
@@ -338,8 +352,8 @@ fun SettingsScreen(
             }
 
             // ===== 关于 =====
-            SectionCard("关于") {
-                Text("录音标记助手 v${UpdateConfig.CURRENT_VERSION}", style = MaterialTheme.typography.bodyMedium)
+            SectionCard("关于", Icons.Filled.Info) {
+                Text("随堂录 v${UpdateConfig.CURRENT_VERSION}", style = MaterialTheme.typography.bodyMedium)
                 Text(
                     "所有数据（录音、图片、AI 回复）保存在应用私有目录，卸载应用会全部删除，请定期在上方导出备份。" +
                         "API Key 仅用于调用你配置的 AI 服务，导出备份时会明文包含，请妥善保管备份文件。",
@@ -362,10 +376,13 @@ fun SettingsScreen(
 }
 
 @Composable
-private fun SectionCard(title: String, content: @Composable () -> Unit) {
+private fun SectionCard(title: String, icon: androidx.compose.ui.graphics.vector.ImageVector, content: @Composable () -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            }
             content()
         }
     }

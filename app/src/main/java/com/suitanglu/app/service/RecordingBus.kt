@@ -13,14 +13,24 @@ data class RecordingState(
     val paused: Boolean,
     val interrupted: Boolean,
     val interruptReason: String? = null,
-    val markerCount: Int = 0,
 )
 
 object RecordingBus {
     private val _state = MutableStateFlow<RecordingState?>(null)
     val state: StateFlow<RecordingState?> = _state
 
+    private val _startError = MutableStateFlow<String?>(null)
+    val startError: StateFlow<String?> = _startError
+
     fun update(state: RecordingState?) {
         _state.value = state
+    }
+
+    fun setStartError(message: String) {
+        _startError.value = message
+    }
+
+    fun clearStartError() {
+        _startError.value = null
     }
 }

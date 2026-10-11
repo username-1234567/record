@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.suitanglu.app.AppGraph
@@ -54,7 +55,13 @@ class PlaybackViewModel(app: Application, val recordingId: Long) : AndroidViewMo
     private val _sendResult = MutableStateFlow<String?>(null)
     val sendResult: StateFlow<String?> = _sendResult
 
+    private val _playerError = MutableStateFlow<String?>(null)
+    val playerError: StateFlow<String?> = _playerError
+
     private var ticker: Job? = null
+
+    /** 展开卡片时的图片查询缓存：回放期间图片不会变化 */
+    private val imageCache = mutableMapOf<Long, List<MarkerImage>>()
 
     init {
         viewModelScope.launch {
@@ -69,6 +76,17 @@ class PlaybackViewModel(app: Application, val recordingId: Long) : AndroidViewMo
                         override fun onIsPlayingChanged(isPlaying: Boolean) {
                             _playing.value = isPlaying
                             if (isPlaying) startTicker() else tickOnce()
+                        }
+
+                        override fun onPlayerError(error: PlaybackException) {
+                            // 进程被杀中断的录音未写 MP4 索引，可能无法播放；明确提示而不是静默无响应
+                            _playerError.value = if (
+                                error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
+                            ) {
+                                "音频文件不存在"
+                            } else {
+                                "文件可能已损坏（录音被系统中断时会产生此类文件）"
+                            }
                         }
                     })
                 }
@@ -129,27 +147,29 @@ class PlaybackViewModel(app: Application, val recordingId: Long) : AndroidViewMo
         seekTo(marker.offsetMs, keepPlaying = _player.value?.isPlaying)
     }
 
+    // 发送跑在 appScope：离开页面取消 viewModelScope 不再打断发送、
+    // 也不会因取消异常把标记卡在“发送中”；结果仍写回本 VM 的状态供当前页面展示
     fun resendFailed() {
-        viewModelScope.launch {
+        container.appScope.launch {
             _sendResult.value = container.aiSendManager.sendQueue(recordingId, onlyFailed = true).message()
         }
     }
 
     fun resendAll() {
-        viewModelScope.launch {
+        container.appScope.launch {
             _sendResult.value = container.aiSendManager.sendQueue(recordingId, onlyFailed = false).message()
         }
     }
 
     fun resendOne(markerId: Long) {
-        viewModelScope.launch {
+        container.appScope.launch {
             val ok = container.aiSendManager.sendSingle(markerId)
             _sendResult.value = if (ok) "重新发送成功" else "发送失败，请稍后再试"
         }
     }
 
     suspend fun imagesOf(marker: Marker): List<MarkerImage> =
-        container.db.markerImageDao().getByMarker(marker.id)
+        imageCache.getOrPut(marker.id) { container.db.markerImageDao().getByMarker(marker.id) }
 
     fun consumeSendResult() {
         _sendResult.value = null
