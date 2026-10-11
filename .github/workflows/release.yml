@@ -27,7 +27,8 @@ jobs:
       # 签名凭据不进仓库：keystore 与密钥轮换谱系存于仓库 Secrets（base64）。
       - name: Decode signing assets
         run: |
-          echo "${{ secrets.SIGNING_LINEAGE_GZ_B64 }}" | base64 -d | gunzip > "$RUNNER_TEMP/lineage" 2>/dev/null || true
+          echo "${{ secrets.SIGNING_KEYSTORE2_B64 }}" | base64 -d > "$RUNNER_TEMP/v2.jks"
+          echo "${{ secrets.SIGNING_LINEAGE_GZ_B64 }}" | base64 -d | gunzip > "$RUNNER_TEMP/lineage"
 
       - name: Build release APK
         env:
