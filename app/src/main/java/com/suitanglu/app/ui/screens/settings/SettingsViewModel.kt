@@ -1,0 +1,200 @@
+package com.suitanglu.app.ui.screens.settings
+
+import android.app.Application
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.suitanglu.app.AppGraph
+import com.suitanglu.app.data.AiConfig
+import com.suitanglu.app.data.GeneralConfig
+import com.suitanglu.app.update.UpdateCheckResult
+import com.suitanglu.app.update.UpdateInfo
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import java.io.File
+
+class SettingsViewModel(app: Application) : AndroidViewModel(app) {
+
+    private val container = AppGraph.get(app)
+
+    val aiConfig: StateFlow<AiConfig> = container.settings.aiConfig
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AiConfig())
+
+    val generalConfig: StateFlow<GeneralConfig> = container.settings.generalConfig
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), GeneralConfig())
+
+    private val _aiTestResult = MutableStateFlow<String?>(null)
+    val aiTestResult: StateFlow<String?> = _aiTestResult
+
+    private val _aiTesting = MutableStateFlow(false)
+    val aiTesting: StateFlow<Boolean> = _aiTesting
+
+    private val _backupProgress = MutableStateFlow<String?>(null)
+    val backupProgress: StateFlow<String?> = _backupProgress
+
+    private val _backupResult = MutableStateFlow<String?>(null)
+    val backupResult: StateFlow<String?> = _backupResult
+
+    private val _storageUsage = MutableStateFlow<Pair<Long, Long>?>(null)
+    val storageUsage: StateFlow<Pair<Long, Long>?> = _storageUsage
+
+    private val _updateState = MutableStateFlow<UpdateUiState>(UpdateUiState.Idle)
+    val updateState: StateFlow<UpdateUiState> = _updateState
+
+    init {
+        refreshStorage()
+    }
+
+    fun saveAi(config: AiConfig) {
+        viewModelScope.launch { container.settings.setAiConfig(config) }
+    }
+
+    fun saveGeneral(config: GeneralConfig) {
+        viewModelScope.launch { container.settings.setGeneralConfig(config) }
+    }
+
+    fun testAi() {
+        viewModelScope.launch {
+            _aiTesting.value = true
+            _aiTestResult.value = try {
+                val ai = container.settings.aiConfigNow()
+                com.suitanglu.app.ai.DeepSeekClient(ai).testConnection()
+            } catch (e: Exception) {
+                "失败：${e.message}"
+            }
+            _aiTesting.value = false
+        }
+    }
+
+    fun clearAiTest() {
+        _aiTestResult.value = null
+    }
+
+    fun exportTo(uri: Uri) {
+        viewModelScope.launch {
+            val result = container.backupManager.exportTo(uri) { _backupProgress.value = it }
+            _backupResult.value = result.fold(
+                onSuccess = { "导出完成，共 $it 个文件" },
+                onFailure = { "导出失败：${it.message}" },
+            )
+            _backupProgress.value = null
+        }
+    }
+
+    fun importFrom(uri: Uri) {
+        viewModelScope.launch {
+            val result = container.backupManager.importFrom(uri) { _backupProgress.value = it }
+            _backupResult.value = result.fold(
+                onSuccess = { it.message() },
+                onFailure = { "导入失败：${it.message}" },
+            )
+            _backupProgress.value = null
+        }
+    }
+
+    fun consumeBackupResult() {
+        _backupResult.value = null
+    }
+
+    fun refreshStorage() {
+        viewModelScope.launch {
+            _storageUsage.value = container.recordingRepository.storageUsage()
+        }
+    }
+
+    fun clearTempFiles() {
+        viewModelScope.launch {
+            val cache = File(getApplication<Application>().cacheDir, "crops")
+            cache.deleteRecursively()
+            val photos = File(getApplication<Application>().cacheDir, "photos")
+            photos.deleteRecursively()
+            refreshStorage()
+            _backupResult.value = "临时文件已清理"
+        }
+    }
+
+    fun requestIgnoreBatteryOptimization() {
+        val ctx = getApplication<Application>()
+        try {
+            ctx.startActivity(
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                    .setData(Uri.parse("package:${ctx.packageName}"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        } catch (_: Exception) {
+            runCatching {
+                ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+        }
+    }
+
+    fun openAppWhitelistSettings() {
+        val ctx = getApplication<Application>()
+        runCatching {
+            ctx.startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.parse("package:${ctx.packageName}"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }
+    }
+
+    fun checkUpdate() {
+        viewModelScope.launch {
+            _updateState.value = UpdateUiState.Checking
+            _updateState.value = when (val r = container.updateChecker.check()) {
+                is UpdateCheckResult.UpToDate -> UpdateUiState.UpToDate(r.current)
+                is UpdateCheckResult.Available -> UpdateUiState.Available(r.info)
+                is UpdateCheckResult.Error -> UpdateUiState.Error(r.message)
+            }
+        }
+    }
+
+    fun downloadUpdate(info: UpdateInfo) {
+        viewModelScope.launch {
+            _updateState.value = UpdateUiState.Downloading(0)
+            val result = container.updateChecker.download(info) { pct ->
+                _updateState.value = UpdateUiState.Downloading(pct)
+            }
+            _updateState.value = result.fold(
+                onSuccess = { UpdateUiState.ReadyToInstall(it) },
+                onFailure = { UpdateUiState.Error("下载失败：${it.message}") },
+            )
+        }
+    }
+
+    fun installUpdate(file: File) {
+        val ctx = getApplication<Application>()
+        try {
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                ctx, "${ctx.packageName}.fileprovider", file,
+            )
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            ctx.startActivity(intent)
+        } catch (e: Exception) {
+            _updateState.value = UpdateUiState.Error("无法安装：${e.message}")
+        }
+    }
+
+    fun resetUpdateState() {
+        _updateState.value = UpdateUiState.Idle
+    }
+}
+
+sealed class UpdateUiState {
+    data object Idle : UpdateUiState()
+    data object Checking : UpdateUiState()
+    data class UpToDate(val version: String) : UpdateUiState()
+    data class Available(val info: UpdateInfo) : UpdateUiState()
+    data class Downloading(val percent: Int) : UpdateUiState()
+    data class ReadyToInstall(val file: File) : UpdateUiState()
+    data class Error(val message: String) : UpdateUiState()
+}

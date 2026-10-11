@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # GitHub ubuntu-latest runner 已预装 Android SDK 并接受许可证，
+      # 缺失的 platform/build-tools 由 AGP 自动下载。
+
+      - name: Build release APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --no-daemon
+          TAG="${GITHUB_REF_NAME}"
+          cp app/build/outputs/apk/release/app-release.apk "record-${TAG}.apk"
+
+      - name: Extract version
+        id: ver
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          [ "$TAG" = "${GITHUB_REF_NAME}" ] && TAG="${GITHUB_REF_NAME}"
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create Release and upload APK
+        uses: softprops/action-gh-release@v2
+        with:
+          name: 录音标记助手 v${{ steps.ver.outputs.version }}
+          body: |
+            自动构建的发布版本。
+
+            请下载 `record-${{ github.ref_name }}.apk` 安装。
+          files: record-${{ github.ref_name }}.apk
+          draft: false
+          prerelease: false
