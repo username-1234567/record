@@ -10,6 +10,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import com.suitanglu.app.AppGraph
 import com.suitanglu.app.data.db.Marker
 import com.suitanglu.app.data.db.MarkerImage
+import com.suitanglu.app.data.db.MarkerTurn
 import com.suitanglu.app.data.db.PauseEvent
 import com.suitanglu.app.data.db.Recording
 import kotlinx.coroutines.Job
@@ -147,8 +148,12 @@ class PlaybackViewModel(app: Application, val recordingId: Long) : AndroidViewMo
         seekTo(marker.offsetMs, keepPlaying = _player.value?.isPlaying)
     }
 
-    // 发送跑在 appScope：离开页面取消 viewModelScope 不再打断发送、
-    // 也不会因取消异常把标记卡在“发送中”；结果仍写回本 VM 的状态供当前页面展示
+    /** 某条标记的多轮对话 */
+    val allTurns: StateFlow<List<MarkerTurn>> = container.db.markerTurnDao().observeAll()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // 发送操作跑在 appScope：离开页面取消 viewModelScope 不再打断生成；
+    // 结果仍写回本 VM 状态供当前页面展示
     fun resendFailed() {
         container.appScope.launch {
             _sendResult.value = container.aiSendManager.sendQueue(recordingId, onlyFailed = true).message()
@@ -164,8 +169,37 @@ class PlaybackViewModel(app: Application, val recordingId: Long) : AndroidViewMo
     fun resendOne(markerId: Long) {
         container.appScope.launch {
             val ok = container.aiSendManager.sendSingle(markerId)
-            _sendResult.value = if (ok) "重新发送成功" else "发送失败，请稍后再试"
+            _sendResult.value = if (ok) "重新生成完成" else "生成失败，请稍后再试"
         }
+    }
+
+    /** 追问：带完整上下文 */
+    fun followUp(markerId: Long, question: String) {
+        container.appScope.launch {
+            val ok = container.aiSendManager.followUp(markerId, question)
+            _sendResult.value = if (ok) null else "追问发送失败，请稍后再试"
+        }
+    }
+
+    /** 单轮重新生成 */
+    fun regenerateTurn(markerId: Long, turnId: Long) {
+        container.appScope.launch {
+            val ok = container.aiSendManager.regenerateTurn(markerId, turnId)
+            _sendResult.value = if (ok) null else "重新生成失败，请稍后再试"
+        }
+    }
+
+    /** 编辑某轮追问并重新答复 */
+    fun editTurn(markerId: Long, turnId: Long, newQuestion: String) {
+        container.appScope.launch {
+            val ok = container.aiSendManager.editTurn(markerId, turnId, newQuestion)
+            _sendResult.value = if (ok) null else "编辑失败，请稍后再试"
+        }
+    }
+
+    /** 手动停止生成：保留已生成的部分，可追问“继续”接上 */
+    fun stopTurn(turnId: Long) {
+        container.aiSendManager.stopTurn(turnId)
     }
 
     suspend fun imagesOf(marker: Marker): List<MarkerImage> =

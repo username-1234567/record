@@ -4,6 +4,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,12 +29,16 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.IosShare
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.Audiotrack
+import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -113,6 +118,16 @@ fun HomeScreen(
     var menuFor by remember { mutableStateOf<Recording?>(null) }
     var showNoPermissionHint by remember { mutableStateOf(false) }
 
+    // 长按进入的批量选择模式
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedIds by remember { mutableStateOf(setOf<Long>()) }
+    val allRecordingIds = sections.flatMap { it.items }.map { it.recording.id }.toSet()
+
+    fun exitSelection() {
+        selectionMode = false
+        selectedIds = emptySet()
+    }
+
     // 授权完成后自动清除提示
     LaunchedEffect(hasNotificationPermission) {
         if (hasNotificationPermission) showNoPermissionHint = false
@@ -137,26 +152,49 @@ fun HomeScreen(
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("随堂录", style = MaterialTheme.typography.titleLarge)
-                        Text(
-                            "课堂录音 · 拍照标记 · AI 讲解",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    }
-                },
-                actions = {
-                    IconButton(onClick = onOpenRecycle) {
-                        Icon(Icons.Filled.Delete, contentDescription = "回收站")
-                    }
-                    IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Filled.Settings, contentDescription = "设置")
-                    }
-                },
-            )
+            if (selectionMode) {
+                TopAppBar(
+                    title = { Text("已选 ${selectedIds.size} 项") },
+                    navigationIcon = {
+                        IconButton(onClick = { exitSelection() }) {
+                            Icon(Icons.Filled.Close, contentDescription = "退出选择")
+                        }
+                    },
+                    actions = {
+                        TextButton(onClick = { selectedIds = allRecordingIds }) { Text("全选") }
+                        TextButton(
+                            enabled = selectedIds.isNotEmpty(),
+                            onClick = {
+                                vm.deleteToRecycleMany(selectedIds)
+                                val n = selectedIds.size
+                                exitSelection()
+                                scope.launch { snackbar.showSnackbar("已将 $n 条录音移入回收站") }
+                            },
+                        ) { Text("移入回收站") }
+                    },
+                )
+            } else {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text("随堂录", style = MaterialTheme.typography.titleLarge)
+                            Text(
+                                "课堂录音 · 拍照标记 · AI 讲解",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = onOpenRecycle) {
+                            Icon(Icons.Filled.Delete, contentDescription = "回收站")
+                        }
+                        IconButton(onClick = onOpenSettings) {
+                            Icon(Icons.Filled.Settings, contentDescription = "设置")
+                        }
+                    },
+                )
+            }
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
@@ -251,6 +289,12 @@ fun HomeScreen(
                         items(section.items, key = { it.recording.id }) { item ->
                             RecordingCard(
                                 item = item,
+                                selectionMode = selectionMode,
+                                selected = item.recording.id in selectedIds,
+                                onToggleSelect = {
+                                    val id = item.recording.id
+                                    selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
+                                },
                                 onClick = {
                                     // 录音中的条目没有可回放的音频，回录音页
                                     if (item.recording.status == Recording.STATUS_RECORDING) {
@@ -259,9 +303,14 @@ fun HomeScreen(
                                         onOpenRecording(item.recording.id)
                                     }
                                 },
-                                onLongPress = { menuFor = item.recording },
+                                onLongPress = {
+                                    // 长按进入批量选择并选中该条
+                                    selectionMode = true
+                                    selectedIds = selectedIds + item.recording.id
+                                },
                                 menuVisible = menuFor?.id == item.recording.id,
                                 onDismissMenu = { menuFor = null },
+                                onMenuClick = { menuFor = item.recording },
                                 onRename = {
                                     renameTarget = item.recording
                                     renameText = item.recording.title
@@ -360,10 +409,14 @@ fun HomeScreen(
 @Composable
 private fun RecordingCard(
     item: HomeItem,
+    selectionMode: Boolean,
+    selected: Boolean,
+    onToggleSelect: () -> Unit,
     onClick: () -> Unit,
     onLongPress: () -> Unit,
     menuVisible: Boolean,
     onDismissMenu: () -> Unit,
+    onMenuClick: () -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit,
     onDeleteAudioOnly: () -> Unit,
@@ -376,27 +429,55 @@ private fun RecordingCard(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 5.dp)
-            .combinedClickable(onClick = onClick, onLongClick = onLongPress),
+            .then(
+                if (selected) {
+                    Modifier.border(
+                        2.dp,
+                        MaterialTheme.colorScheme.primary,
+                        RoundedCornerShape(20.dp),
+                    )
+                } else {
+                    Modifier
+                },
+            )
+            .combinedClickable(
+                onClick = { if (selectionMode) onToggleSelect() else onClick() },
+                onLongClick = { if (!selectionMode) onLongPress() },
+            ),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (isRecording) {
-                MaterialTheme.colorScheme.primaryContainer
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+            containerColor = when {
+                selected -> MaterialTheme.colorScheme.primaryContainer
+                isRecording -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+                else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
             },
         ),
     ) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // 课程色点：同课程同色，扫一眼对上课
-                val dotColor = courseColor(rec.courseName)
-                if (dotColor != null) {
-                    Box(
-                        Modifier
-                            .size(10.dp)
-                            .background(dotColor, CircleShape),
+                if (selectionMode) {
+                    Icon(
+                        if (selected) Icons.Filled.CheckCircle else Icons.Outlined.RadioButtonUnchecked,
+                        contentDescription = if (selected) "已选中" else "未选中",
+                        tint = if (selected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.size(22.dp),
                     )
-                    Spacer(Modifier.width(8.dp))
+                    Spacer(Modifier.width(10.dp))
+                } else {
+                    // 课程色点：同课程同色，扫一眼对上课
+                    val dotColor = courseColor(rec.courseName)
+                    if (dotColor != null) {
+                        Box(
+                            Modifier
+                                .size(10.dp)
+                                .background(dotColor, CircleShape),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
                 }
                 Text(
                     rec.title,
@@ -404,6 +485,35 @@ private fun RecordingCard(
                     maxLines = 1,
                     modifier = Modifier.weight(1f),
                 )
+                if (!selectionMode) {
+                    Box {
+                        IconButton(onClick = onMenuClick, modifier = Modifier.size(28.dp)) {
+                            Icon(
+                                Icons.Filled.MoreVert,
+                                contentDescription = "更多操作",
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                        DropdownMenu(expanded = menuVisible, onDismissRequest = onDismissMenu) {
+                            DropdownMenuItem(
+                                text = { Text("重命名") },
+                                leadingIcon = { Icon(Icons.Filled.DriveFileRenameOutline, null) },
+                                onClick = onRename,
+                            )
+                            DropdownMenuItem(
+                                text = { Text("删除到回收站") },
+                                leadingIcon = { Icon(Icons.Filled.Delete, null) },
+                                onClick = onDelete,
+                            )
+                            DropdownMenuItem(text = { Text("仅删除录音文件") }, onClick = onDeleteAudioOnly)
+                            DropdownMenuItem(
+                                text = { Text("导出单条录音") },
+                                leadingIcon = { Icon(Icons.Filled.IosShare, null) },
+                                onClick = onExport,
+                            )
+                        }
+                    }
+                }
                 if (isRecording) {
                     RecordingPulseDot()
                     Spacer(Modifier.width(6.dp))
@@ -461,27 +571,6 @@ private fun RecordingCard(
                         "有标记未发送，可重发",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.error,
-                    )
-                }
-            }
-            Spacer(Modifier.height(4.dp))
-            Box(Modifier.align(Alignment.End)) {
-                DropdownMenu(expanded = menuVisible, onDismissRequest = onDismissMenu) {
-                    DropdownMenuItem(
-                        text = { Text("重命名") },
-                        leadingIcon = { Icon(Icons.Filled.DriveFileRenameOutline, null) },
-                        onClick = onRename,
-                    )
-                    DropdownMenuItem(
-                        text = { Text("删除到回收站") },
-                        leadingIcon = { Icon(Icons.Filled.Delete, null) },
-                        onClick = onDelete,
-                    )
-                    DropdownMenuItem(text = { Text("仅删除录音文件") }, onClick = onDeleteAudioOnly)
-                    DropdownMenuItem(
-                        text = { Text("导出单条录音") },
-                        leadingIcon = { Icon(Icons.Filled.IosShare, null) },
-                        onClick = onExport,
                     )
                 }
             }

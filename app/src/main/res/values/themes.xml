@@ -4,4 +4,13 @@
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">true</item>
     </style>
+
+    <!-- uCrop 的 UCropActivity 是 AppCompatActivity，必须用 AppCompat 系主题，
+         否则 onCreate 直接崩溃（相机拍完/相册选图后的裁剪页闪退根因）；
+         全屏隐藏状态栏：uCrop 工具栏顶到屏幕最上方，确认按钮不被状态栏遮挡 -->
+    <style name="Theme.UCrop.Fix" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:statusBarColor">#FF1B1B1B</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
 </resources>

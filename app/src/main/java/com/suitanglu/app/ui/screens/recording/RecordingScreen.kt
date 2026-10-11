@@ -98,11 +98,14 @@ fun RecordingScreen(
     val startError by RecordingBus.startError.collectAsState()
     val pending by vm.pendingImages.collectAsState()
     val markerCount by vm.markerCount.collectAsState()
+    // 必须订阅：不订阅时 cameraMode 永远是默认值，设置的“应用内相机”不会生效
+    val general by vm.generalConfig.collectAsState()
 
-    var showMarkerSheet by remember { mutableStateOf(false) }
-    var markerText by remember { mutableStateOf("") }
+    // saveable：系统在相机/裁剪期间重建 Activity 时，弹层与未保存文字不丢
+    var showMarkerSheet by rememberSaveable { mutableStateOf(false) }
+    var markerText by rememberSaveable { mutableStateOf("") }
     var showStopConfirm by remember { mutableStateOf(false) }
-    var croppingSource by remember { mutableStateOf<Uri?>(null) }
+    var croppingSource by rememberSaveable { mutableStateOf<Uri?>(null) }
     // saveable：进程被杀恢复后为 true，不再自动重启录音（避免恢复出“一坏一好”两条录音）
     var attemptedStart by rememberSaveable { mutableStateOf(false) }
 
@@ -279,7 +282,7 @@ fun RecordingScreen(
         Spacer(Modifier.height(32.dp))
         Button(
             onClick = {
-                if (!hasCameraPermission && vm.cameraMode != CameraMode.SYSTEM) {
+                if (!hasCameraPermission && general.cameraMode != CameraMode.SYSTEM) {
                     onRequestPermissions()
                     return@Button
                 }
@@ -321,7 +324,7 @@ fun RecordingScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = {
-                            if (vm.cameraMode == CameraMode.IN_APP) {
+                            if (general.cameraMode == CameraMode.IN_APP) {
                                 showMarkerSheet = false
                                 onOpenInAppCamera()
                             } else {

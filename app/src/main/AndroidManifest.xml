@@ -37,12 +37,13 @@
             android:exported="false"
             android:foregroundServiceType="microphone" />
 
-        <!-- uCrop 在 Android 15（targetSdk 35 强制 edge-to-edge）下调用 setStatusBarColor 会崩溃，
-             显式声明该 activity 退出强制全屏 -->
+        <!-- uCrop 的 UCropActivity 是 AppCompatActivity：必须显式给 AppCompat 系主题（否则裁剪页一开就崩），
+             且 Android 15（targetSdk 35 强制 edge-to-edge）下退出强制全屏，避免 setStatusBarColor 崩溃 -->
         <activity
             android:name="com.yalantis.ucrop.UCropActivity"
+            android:theme="@style/Theme.UCrop.Fix"
             android:windowOptOutEdgeToEdgeEnforcement="true"
-            tools:replace="android:windowOptOutEdgeToEdgeEnforcement" />
+            tools:replace="android:theme,android:windowOptOutEdgeToEdgeEnforcement" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

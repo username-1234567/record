@@ -15,6 +15,8 @@ class UCropContract : ActivityResultContract<Pair<Uri, Uri>, Uri?>() {
         val options = UCrop.Options().apply {
             setFreeStyleCropEnabled(true)
             setToolbarTitle("裁剪图片")
+            // 工具栏底色必须和标题/图标（白色）配套：默认浅色底会让白色按钮完全看不见
+            setToolbarColor(0xFF1B1B1B.toInt())
             setToolbarWidgetColor(0xFFFFFFFF.toInt())
             // 实色状态栏：Android 15 强制 edge-to-edge 下透明色/相关调用会崩溃
             setStatusBarColor(0xFF1B1B1B.toInt())

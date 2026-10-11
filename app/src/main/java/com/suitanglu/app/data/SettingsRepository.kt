@@ -19,7 +19,7 @@ data class AiConfig(
     val model: String = "deepseek-flash",
     val stream: Boolean = true,
     val timeoutSeconds: Int = 180,
-    val maxTokens: Int = 4096,
+    val maxTokens: Int = 0,
     val prompt: String = "详细讲解内容",
 )
 
@@ -82,7 +82,7 @@ class SettingsRepository(private val context: Context) {
             model = p[K.aiModel] ?: "deepseek-flash",
             stream = p[K.aiStream] ?: true,
             timeoutSeconds = p[K.aiTimeout] ?: 180,
-            maxTokens = p[K.aiMaxTokens] ?: 4096,
+            maxTokens = p[K.aiMaxTokens] ?: 0,
             prompt = p[K.aiPrompt] ?: "详细讲解内容",
         )
     }

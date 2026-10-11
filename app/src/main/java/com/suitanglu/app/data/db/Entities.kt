@@ -64,6 +64,31 @@ data class MarkerImage(
 )
 
 @Serializable
+@Entity(tableName = "marker_turns", indices = [androidx.room.Index("markerId")])
+data class MarkerTurn(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val markerId: Long,
+    val orderIndex: Int, // 0 = 录音结束的自动讲解轮，其后为追问轮
+    val question: String? = null, // 追问内容（首轮为 null，使用标记的主提示词）
+    val answer: String? = null,
+    val status: String = TURN_PENDING,
+    val error: String? = null,
+    val promptTokens: Int = 0, // 输入 token 数（含缓存命中）
+    val cacheHitTokens: Int = 0, // 命中上下文缓存的 token 数（计费大幅降低）
+    val completionTokens: Int = 0,
+    val finishReason: String? = null, // length = 达到最大输出被截断
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis(),
+) {
+    companion object {
+        const val TURN_PENDING = "pending"
+        const val TURN_SENDING = "sending"
+        const val TURN_SUCCESS = "success"
+        const val TURN_FAILED = "failed"
+    }
+}
+
+@Serializable
 @Entity(tableName = "pause_events")
 data class PauseEvent(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,

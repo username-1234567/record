@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<link rel="stylesheet" href="katex.min.css">
+<script src="markdown-it.min.js"></script>
+<script src="katex.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body {
+    font-family: -apple-system, "MiSans", "HarmonyOS Sans", "Noto Sans CJK SC", sans-serif;
+    font-size: 14px; line-height: 1.75; word-break: break-word;
+    padding: 0 2px;
+  }
+  body.dark { color: #E4E2DE; }
+  body.light { color: #3A3630; }
+  p { margin: 0.4em 0; }
+  h1, h2, h3, h4 { margin: 0.8em 0 0.4em; line-height: 1.4; }
+  pre {
+    background: rgba(127,127,127,0.14); border-radius: 8px; padding: 10px 12px;
+    overflow-x: auto; font-size: 13px; line-height: 1.5;
+  }
+  code { background: rgba(127,127,127,0.16); border-radius: 4px; padding: 1px 5px; font-size: 13px; }
+  pre code { background: transparent; padding: 0; }
+  table { border-collapse: collapse; margin: 0.6em 0; display: block; overflow-x: auto; }
+  th, td { border: 1px solid rgba(127,127,127,0.4); padding: 5px 10px; font-size: 13px; }
+  blockquote { margin: 0.5em 0; padding: 2px 12px; border-left: 3px solid rgba(127,127,127,0.45); color: inherit; opacity: 0.85; }
+  ul, ol { margin: 0.3em 0; padding-left: 1.5em; }
+  img { max-width: 100%; }
+  .katex { font-size: 1.05em; }
+  .katex-display { overflow-x: auto; overflow-y: hidden; padding: 2px 0; margin: 0.5em 0; }
+  .math-fallback { background: rgba(127,127,127,0.16); border-radius: 4px; padding: 1px 5px; font-size: 13px; }
+</style>
+</head>
+<body class="light">
+<div id="content"></div>
+<script>
+var md = window.markdownit({ html: false, linkify: true, breaks: true });
+
+// 1) 先抽取公式段，避免 markdown-it 把 \( \[ 当转义符吃掉
+function extractMath(text) {
+  var math = [];
+  function store(tex, display) {
+    math.push({ tex: tex, display: display });
+    return '@@MATH' + (math.length - 1) + '@@';
+  }
+  text = String(text || '')
+    .replace(/\$\$([\s\S]+?)\$\$/g, function(_, tex) { return store(tex, true); })
+    .replace(/\\\[([\s\S]+?)\\\]/g, function(_, tex) { return store(tex, true); })
+    .replace(/\\\(([\s\S]+?)\\\)/g, function(_, tex) { return store(tex, false); })
+    .replace(/\$([^\$\n]+?)\$/g, function(whole, tex) {
+      // 单 $ 误伤防护：内容前后带空格或纯数字（如 “$5 和 $6”）按普通文本处理
+      if (/^\s|\s$/.test(tex) || /^\d+$/.test(tex)) return whole;
+      return store(tex, false);
+    });
+  return { text: text, math: math };
+}
+
+// 2) markdown 渲染后，把占位符换回 KaTeX 渲染结果（code/pre 内不替换）
+function restoreMath(html, math) {
+  var parts = html.split(/(<pre[\s\S]*?<\/pre>|<code[\s\S]*?<\/code>)/g);
+  return parts.map(function(part) {
+    if (part.indexOf('<pre') === 0 || part.indexOf('<code') === 0) return part;
+    return part.replace(/@@MATH(\d+)@@/g, function(_, i) {
+      var m = math[parseInt(i, 10)];
+      if (!m) return '';
+      try {
+        return window.katex.renderToString(m.tex, { displayMode: m.display, throwOnError: false });
+      } catch (e) {
+        return '<span class="math-fallback">' + m.tex.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</span>';
+      }
+    });
+  }).join('');
+}
+
+function render(text, dark) {
+  document.body.className = dark ? 'dark' : 'light';
+  var ex = extractMath(text);
+  var html = md.render(ex.text);
+  html = restoreMath(html, ex.math);
+  document.getElementById('content').innerHTML = html;
+  if (window.android && window.android.reportHeight) {
+    window.android.reportHeight(document.body.scrollHeight);
+  }
+}
+window.render = render;
+</script>
+</body>
+</html>

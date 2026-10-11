@@ -29,8 +29,6 @@ class RecordingViewModel(app: Application) : AndroidViewModel(app) {
     val generalConfig: StateFlow<com.suitanglu.app.data.GeneralConfig> = container.settings.generalConfig
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), com.suitanglu.app.data.GeneralConfig())
 
-    val cameraMode: String get() = generalConfig.value.cameraMode
-
     private val _pendingImages = MutableStateFlow<List<File>>(emptyList())
     val pendingImages: StateFlow<List<File>> = _pendingImages
 

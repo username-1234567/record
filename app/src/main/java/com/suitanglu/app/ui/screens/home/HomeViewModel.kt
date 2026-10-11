@@ -60,6 +60,10 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { repo.deleteToRecycle(id) }
     }
 
+    fun deleteToRecycleMany(ids: Collection<Long>) {
+        viewModelScope.launch { ids.forEach { repo.deleteToRecycle(it) } }
+    }
+
     fun deleteAudioOnly(id: Long) {
         viewModelScope.launch { repo.deleteAudioOnly(id) }
     }

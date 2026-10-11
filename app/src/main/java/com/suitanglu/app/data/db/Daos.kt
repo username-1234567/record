@@ -129,6 +129,34 @@ interface PauseEventDao {
 }
 
 @Dao
+interface MarkerTurnDao {
+    @Query("SELECT * FROM marker_turns WHERE markerId = :markerId ORDER BY orderIndex ASC, id ASC")
+    fun observeByMarker(markerId: Long): Flow<List<MarkerTurn>>
+
+    @Query("SELECT * FROM marker_turns ORDER BY markerId ASC, orderIndex ASC, id ASC")
+    fun observeAll(): Flow<List<MarkerTurn>>
+
+    @Query("SELECT * FROM marker_turns WHERE markerId = :markerId ORDER BY orderIndex ASC, id ASC")
+    suspend fun getByMarker(markerId: Long): List<MarkerTurn>
+
+    @Query("SELECT * FROM marker_turns WHERE id = :id")
+    suspend fun getById(id: Long): MarkerTurn?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(turn: MarkerTurn): Long
+
+    @Update
+    suspend fun update(turn: MarkerTurn)
+
+    // 编辑某轮追问后，丢弃其后的所有轮次（重新生成时上下文以它为准）
+    @Query("DELETE FROM marker_turns WHERE markerId = :markerId AND orderIndex > :orderIndex")
+    suspend fun deleteAfter(markerId: Long, orderIndex: Int)
+
+    @Query("DELETE FROM marker_turns WHERE markerId = :markerId")
+    suspend fun deleteByMarker(markerId: Long)
+}
+
+@Dao
 interface AiRequestLogDao {
     @Insert
     suspend fun insert(log: AiRequestLog): Long

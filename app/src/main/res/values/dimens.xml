@@ -1,0 +1,4 @@
+<resources>
+    <!-- 覆盖 uCrop 库的默认值：裁剪选框最小 100dp 无法框住单个公式，改为 24dp -->
+    <dimen name="ucrop_default_crop_rect_min_size">24dp</dimen>
+</resources>

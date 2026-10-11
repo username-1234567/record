@@ -100,6 +100,17 @@ fun SettingsScreen(
         ActivityResultContracts.OpenDocument(),
     ) { uri -> uri?.let { vm.importFrom(it) } }
 
+    // 界面当前填写的 AI 配置：保存与测试连接共用，避免“测试的是旧配置”的误导
+    fun currentAiConfig(): com.suitanglu.app.data.AiConfig = ai.copy(
+        apiKey = apiKey.trim(),
+        baseUrl = baseUrl.trim(),
+        model = model.trim(),
+        stream = stream,
+        timeoutSeconds = timeout.toIntOrNull() ?: 180,
+        maxTokens = maxTokens.toIntOrNull() ?: 4096,
+        prompt = prompt,
+    )
+
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
@@ -158,7 +169,7 @@ fun SettingsScreen(
                     )
                     OutlinedTextField(
                         value = maxTokens, onValueChange = { maxTokens = it.filter { c -> c.isDigit() } },
-                        label = { Text("最大输出 token") }, modifier = Modifier.weight(1f), singleLine = true,
+                        label = { Text("最大输出 token（0 = 不限制，推荐）") }, modifier = Modifier.weight(1f), singleLine = true,
                     )
                 }
                 OutlinedTextField(
@@ -167,20 +178,8 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(), minLines = 2,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = {
-                        vm.saveAi(
-                            ai.copy(
-                                apiKey = apiKey.trim(),
-                                baseUrl = baseUrl.trim(),
-                                model = model.trim(),
-                                stream = stream,
-                                timeoutSeconds = timeout.toIntOrNull() ?: 180,
-                                maxTokens = maxTokens.toIntOrNull() ?: 4096,
-                                prompt = prompt,
-                            ),
-                        )
-                    }) { Text("保存 AI 配置") }
-                    Button(onClick = { vm.testAi() }, enabled = !aiTesting) {
+                    Button(onClick = { vm.saveAi(currentAiConfig()) }) { Text("保存 AI 配置") }
+                    Button(onClick = { vm.saveAndTestAi(currentAiConfig()) }, enabled = !aiTesting) {
                         Text("测试连接")
                     }
                 }
@@ -192,7 +191,15 @@ fun SettingsScreen(
                     }
                 }
                 aiTestResult?.let {
-                    Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (it.startsWith("失败")) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
+                    )
                 }
                 Text(
                     "用户文字备注不会发送给 AI；仅发送标记图片和提示词。",

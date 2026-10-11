@@ -58,12 +58,13 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { container.settings.setGeneralConfig(config) }
     }
 
-    fun testAi() {
+    /** 测试连接 = 先保存界面上的配置，再用同一份配置测试，一步到位 */
+    fun saveAndTestAi(config: AiConfig) {
         viewModelScope.launch {
+            container.settings.setAiConfig(config)
             _aiTesting.value = true
             _aiTestResult.value = try {
-                val ai = container.settings.aiConfigNow()
-                com.suitanglu.app.ai.DeepSeekClient(ai).testConnection()
+                com.suitanglu.app.ai.DeepSeekClient(config).testConnection()
             } catch (e: Exception) {
                 "失败：${e.message}"
             }

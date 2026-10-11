@@ -1,10 +1,10 @@
 package com.suitanglu.app.ui.screens.playback
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,12 +24,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
@@ -40,6 +44,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -70,12 +75,14 @@ import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import androidx.compose.ui.platform.LocalContext as Ctx1
 import coil.compose.AsyncImage
 import com.suitanglu.app.data.Formatters
 import com.suitanglu.app.data.db.Marker
+import com.suitanglu.app.data.db.MarkerImage
+import com.suitanglu.app.data.db.MarkerTurn
 import com.suitanglu.app.data.db.PauseEvent
 import com.suitanglu.app.data.db.Recording
+import com.suitanglu.app.ai.StreamingState
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -103,13 +110,15 @@ fun PlaybackScreen(recordingId: Long, onBack: () -> Unit) {
     val sendResult by vm.sendResult.collectAsState()
     val streaming by vm.streaming.collectAsState()
     val playerError by vm.playerError.collectAsState()
+    val allTurns by vm.allTurns.collectAsState()
+    val turnsByMarker = remember(allTurns) { allTurns.groupBy { it.markerId } }
 
     var expandedMarkerId by remember { mutableStateOf<Long?>(null) }
     var showSpeedMenu by remember { mutableStateOf(false) }
 
     LaunchedEffect(sendResult) {
         sendResult?.let {
-            snackbar.showSnackbar(it)
+            if (it.isNotBlank()) snackbar.showSnackbar(it)
             vm.consumeSendResult()
         }
     }
@@ -293,7 +302,8 @@ fun PlaybackScreen(recordingId: Long, onBack: () -> Unit) {
                 MarkerCard(
                     marker = marker,
                     expanded = expandedMarkerId == marker.id,
-                    streamingText = streaming?.takeIf { it.markerId == marker.id }?.text,
+                    turns = turnsByMarker[marker.id].orEmpty(),
+                    streaming = streaming?.takeIf { it.markerId == marker.id },
                     onClick = {
                         vm.jumpToMarker(marker)
                         expandedMarkerId = if (expandedMarkerId == marker.id) null else marker.id
@@ -301,7 +311,11 @@ fun PlaybackScreen(recordingId: Long, onBack: () -> Unit) {
                     onToggleExpand = {
                         expandedMarkerId = if (expandedMarkerId == marker.id) null else marker.id
                     },
-                    onResend = { vm.resendOne(marker.id) },
+                    onRegenerateTurn = { turnId -> vm.regenerateTurn(marker.id, turnId) },
+                    onEditTurn = { turnId, text -> vm.editTurn(marker.id, turnId, text) },
+                    onFollowUp = { q -> vm.followUp(marker.id, q) },
+                    onStopTurn = { turnId -> vm.stopTurn(turnId) },
+                    onResendMarker = { vm.resendOne(marker.id) },
                     loadImages = { vm.imagesOf(marker) },
                 )
             }
@@ -489,17 +503,26 @@ fun MarkerProgressBar(
 private fun MarkerCard(
     marker: Marker,
     expanded: Boolean,
-    streamingText: String?,
+    turns: List<MarkerTurn>,
+    streaming: StreamingState?,
     onClick: () -> Unit,
     onToggleExpand: () -> Unit,
-    onResend: () -> Unit,
-    loadImages: suspend (Marker) -> List<com.suitanglu.app.data.db.MarkerImage>,
+    onRegenerateTurn: (Long) -> Unit,
+    onEditTurn: (Long, String) -> Unit,
+    onFollowUp: (String) -> Unit,
+    onStopTurn: (Long) -> Unit,
+    onResendMarker: () -> Unit,
+    loadImages: suspend (Marker) -> List<MarkerImage>,
 ) {
-    var images by remember(marker.id) { mutableStateOf<List<com.suitanglu.app.data.db.MarkerImage>>(emptyList()) }
+    var images by remember(marker.id) { mutableStateOf<List<MarkerImage>>(emptyList()) }
     var fullImage by remember { mutableStateOf<String?>(null) }
+    var followUpText by remember { mutableStateOf("") }
+    var editingTurnId by remember { mutableStateOf<Long?>(null) }
+    var editDraft by remember { mutableStateOf("") }
     LaunchedEffect(expanded) {
         if (expanded) images = loadImages(marker)
     }
+    val anySending = turns.any { it.status == MarkerTurn.TURN_SENDING }
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -527,9 +550,9 @@ private fun MarkerCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
                 )
-                StatusChip(marker.aiStatus)
+                StatusChip(if (anySending) Marker.AI_SENDING else marker.aiStatus)
             }
-            if (marker.aiStatus == Marker.AI_FAILED && marker.aiError != null) {
+            if (marker.aiStatus == Marker.AI_FAILED && marker.aiError != null && !expanded) {
                 Text(
                     "失败原因：${marker.aiError}",
                     style = MaterialTheme.typography.labelMedium,
@@ -561,42 +584,100 @@ private fun MarkerCard(
                     Text("备注：$it", style = MaterialTheme.typography.bodyMedium)
                     Spacer(Modifier.height(8.dp))
                 }
-                when {
-                    marker.aiStatus == Marker.AI_SENDING && streamingText != null -> {
-                        Text("AI 讲解（生成中）…", style = MaterialTheme.typography.labelMedium)
-                        Text(streamingText, style = MaterialTheme.typography.bodyMedium)
-                    }
-                    marker.aiStatus == Marker.AI_SENDING -> {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            CircularProgressIndicator(Modifier.size(16.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("正在发送 AI 讲解请求…", style = MaterialTheme.typography.labelMedium)
-                        }
-                    }
-                    marker.aiStatus == Marker.AI_PENDING -> {
-                        Text("待发送：录音结束后将自动发送", style = MaterialTheme.typography.labelMedium)
-                    }
-                    marker.aiStatus == Marker.AI_SUCCESS -> {
-                        var expandedText by remember(marker.id) { mutableStateOf(false) }
-                        Text("AI 讲解", style = MaterialTheme.typography.labelMedium)
-                        val response = marker.aiResponse.orEmpty()
-                        Text(
-                            response,
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = if (expandedText) Int.MAX_VALUE else 6,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+
+                // ===== 多轮对话 =====
+                if (turns.isEmpty()) {
+                    when (marker.aiStatus) {
+                        Marker.AI_PENDING -> Text(
+                            "待发送：录音结束后将自动发送",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        if (response.length > 120) {
-                            TextButton(onClick = { expandedText = !expandedText }) {
-                                Text(if (expandedText) "收起" else "展开全文")
+                        Marker.AI_SENDING -> Text(
+                            "正在发送 AI 讲解请求…",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Marker.AI_FAILED -> {
+                            Text(
+                                "生成失败：${marker.aiError ?: "未知原因"}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            TextButton(onClick = onResendMarker) {
+                                Icon(Icons.Filled.Refresh, contentDescription = null, Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("重新生成")
+                            }
+                        }
+                        else -> {
+                            // 无轮次记录的历史成功数据：直接展示旧回复
+                            Text("AI 讲解", style = MaterialTheme.typography.labelMedium)
+                            Text(marker.aiResponse.orEmpty(), style = MaterialTheme.typography.bodyMedium)
+                            TextButton(onClick = onResendMarker) {
+                                Text("重新生成", style = MaterialTheme.typography.labelMedium)
                             }
                         }
                     }
-                    marker.aiStatus == Marker.AI_FAILED -> {
-                        TextButton(onClick = onResend) {
-                            Icon(Icons.Filled.Refresh, contentDescription = null, Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("重新发送")
+                } else {
+                    turns.forEachIndexed { index, turn ->
+                        TurnView(
+                            turn = turn,
+                            streaming = streaming?.takeIf { it.turnId == turn.id },
+                            onStopTurn = { onStopTurn(turn.id) },
+                            onRegenerate = { onRegenerateTurn(turn.id) },
+                            onEdit = {
+                                editingTurnId = turn.id
+                                editDraft = turn.question.orEmpty()
+                            },
+                        )
+                        if (editingTurnId == turn.id) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                OutlinedTextField(
+                                    value = editDraft,
+                                    onValueChange = { editDraft = it },
+                                    label = { Text("编辑发送内容") },
+                                    modifier = Modifier.weight(1f),
+                                    minLines = 2,
+                                )
+                                IconButton(
+                                    onClick = {
+                                        onEditTurn(turn.id, editDraft)
+                                        editingTurnId = null
+                                    },
+                                    enabled = editDraft.isNotBlank(),
+                                ) {
+                                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "保存并重新生成")
+                                }
+                                IconButton(onClick = { editingTurnId = null }) {
+                                    Icon(Icons.Filled.Close, contentDescription = "取消编辑")
+                                }
+                            }
+                        }
+                        if (index < turns.lastIndex) Spacer(Modifier.height(8.dp))
+                    }
+                    Spacer(Modifier.height(10.dp))
+
+                    // ===== 追问输入 =====
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = followUpText,
+                            onValueChange = { followUpText = it },
+                            label = { Text("追问…") },
+                            modifier = Modifier.weight(1f),
+                            enabled = !anySending,
+                            minLines = 1,
+                            maxLines = 4,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        IconButton(
+                            onClick = {
+                                onFollowUp(followUpText.trim())
+                                followUpText = ""
+                            },
+                            enabled = !anySending && followUpText.isNotBlank(),
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送追问")
                         }
                     }
                 }
@@ -612,6 +693,122 @@ private fun MarkerCard(
             )
         }
     }
+}
+
+/** 单轮问答：问题气泡（可编辑）+ 回答（markdown/公式渲染，可重新生成/停止） */
+@Composable
+private fun TurnView(
+    turn: MarkerTurn,
+    streaming: StreamingState?,
+    onStopTurn: () -> Unit,
+    onRegenerate: () -> Unit,
+    onEdit: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        // 问题气泡（首轮为实际发送的提示词，可编辑）
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            Column(
+                Modifier
+                    .weight(1f, fill = false)
+                    .background(
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                        RoundedCornerShape(12.dp),
+                    )
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            ) {
+                Text(
+                    turn.question ?: (if (turn.orderIndex == 0) "（详细讲解本页内容）" else ""),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
+        // 编辑放在问题气泡正下方
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = onEdit) {
+                Icon(Icons.Filled.Edit, contentDescription = null, Modifier.size(14.dp))
+                Spacer(Modifier.width(2.dp))
+                Text("编辑", style = MaterialTheme.typography.labelMedium)
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        // 回答区
+        when {
+            turn.status == MarkerTurn.TURN_SENDING && streaming != null -> {
+                Text(
+                    streaming.text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("生成中…", style = MaterialTheme.typography.labelMedium)
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = onStopTurn) {
+                        Icon(Icons.Filled.Stop, contentDescription = null, Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("停止生成")
+                    }
+                }
+            }
+            turn.status == MarkerTurn.TURN_SENDING -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("正在生成…", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+            turn.status == MarkerTurn.TURN_SUCCESS -> {
+                MarkdownView(text = turn.answer.orEmpty())
+                Spacer(Modifier.height(2.dp))
+                UsageHint(turn)
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = onRegenerate, enabled = turn.status != MarkerTurn.TURN_SENDING) {
+                        Icon(Icons.Filled.Refresh, contentDescription = null, Modifier.size(14.dp))
+                        Spacer(Modifier.width(2.dp))
+                        Text("重新生成", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+            turn.status == MarkerTurn.TURN_FAILED -> {
+                Text(
+                    "生成失败：${turn.error ?: "未知原因"}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                TextButton(onClick = onRegenerate) {
+                    Icon(Icons.Filled.Refresh, contentDescription = null, Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("重试")
+                }
+            }
+        }
+    }
+}
+
+/** token 用量与状态提示行 */
+@Composable
+private fun UsageHint(turn: MarkerTurn) {
+    val hints = mutableListOf<String>()
+    if (turn.promptTokens > 0) {
+        hints.add(
+            if (turn.cacheHitTokens > 0) {
+                "输入 ${turn.promptTokens}（缓存命中 ${turn.cacheHitTokens}）· 输出 ${turn.completionTokens}"
+            } else {
+                "输入 ${turn.promptTokens} · 输出 ${turn.completionTokens}"
+            },
+        )
+    }
+    when (turn.finishReason) {
+        "stopped_by_user" -> hints.add("已手动停止生成，可追问「继续」接上")
+        "length" -> hints.add("已达到最大输出长度被截断，可追问「继续」")
+    }
+    if (hints.isEmpty()) return
+    Text(
+        hints.joinToString("；"),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable
